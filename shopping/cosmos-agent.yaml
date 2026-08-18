@@ -1,0 +1,44 @@
+# Shopping scout — Cosmos market agent manifest
+# Spec: https://github.com/honeyground-org/cosmos-billy/blob/main/docs/AGENT_GUIDE.md
+#
+# ★The source text is English★ Per-language text lives in the market index
+# entry (`title_i18n` / `description_i18n`) — readers see their own language and
+# fall back to English when one is missing.
+id: honeyground-org/shopping
+type: feature
+version: 1.0.0
+contract: plugin/v1
+title: Shopping scout
+# ★설치 화면은 코드를 받기 **전에** 그려진다★ — 그래서 무엇을 기억하는지가 여기
+# 없으면 사용자는 설치한 뒤에야 그것을 알게 된다.
+description: >-
+  Shopping search is everywhere; this remembers. It keeps what you were thinking
+  of buying and what it cost that day, so the next time you ask it can say "that
+  one dropped 12,000 since you looked". Four candidates sit side by side on one
+  screen with the photo, the price, how many people reviewed it and whether the
+  seller is official — say "show the next ones" for more. Ranking never counts
+  commission; where a link pays us is written on that row. Nothing you weighed
+  while choosing becomes a permanent "taste" of yours — it rides on that one
+  decision and goes when it goes. It can hand a purchase to Wallet, but the last
+  button is always yours.
+# ★번역은 **인덱스 항목**에 있다★ 매니페스트는 `title_i18n`·`description_i18n`을
+# 읽지 않는다(검증기가 *"this version ignores it"* 이라고 말한다). 무시되는 칸을
+# 여기 적어 두면 다음 사람은 있는 줄 알고 배선했다가 영영 빈 값을 받는다.
+# 다섯 언어 번역은 cosmos-market-index 의 이 항목에 있다.
+author: honeyground-org
+license: MIT
+homepage: https://github.com/honeyground-org/cosmos-agents/tree/main/shopping
+entry: shopping_scout:ShoppingPlugin
+tools:
+  - shopping
+# ⚠️ 로더가 **코드 ∪ 매니페스트**로 역량을 넓히므로 둘이 어긋나면 승인된 것과 집행되는
+# 것이 갈린다. 코드의 `capabilities`와 반드시 같아야 한다.
+capabilities:
+  - network
+  - memory
+  - shopping.search
+requires_desktop: false
+# ★결제는 월렛이 한다★ 없으면 비교까지는 되지만 *"결제 도와줘"* 가 아무 일도 안 한다 —
+# 있는 줄 알고 눌렀는데 조용한 것이 가장 나쁘다.
+requires:
+  - wallet
