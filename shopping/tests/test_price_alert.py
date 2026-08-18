@@ -275,6 +275,58 @@ def test_it_does_not_search_again_on_every_single_turn(brain, tmp_path):
     assert len(searches) == first, "말이 오갈 때마다 다시 검색하고 있습니다"
 
 
+def test_a_background_check_keeps_everything_else_the_wish_knows(brain):
+    """★적는 것만 보고 **적고 나서 되읽는 것**을 안 봤다★ (2026-08-19 실측)
+
+    `remember_check`가 `update_entity`에 적을 것만 넘기고 있었다. 그 문은 attrs를
+    **병합하지 않고 갈아 끼운다** — 그래서 배경 점검이 한 번 돌면 그 의도가 아는
+    나머지가 전부 사라졌고, 남은 것은 `last_checked` 하나였다.
+
+    ★사라진 여덟이 전부 이 기능이 서 있는 바닥이었다★
+      · `price`·`currency` — *"그때 얼마였나"*. 없으면 *"내렸어요"* 를 못 말한다
+      · `last_alert`       — 조용히 기다리는 사흘. 없으면 **같은 물건을 매번 알린다**
+      · `provenance=user`  — 없으면 자동 파이프라인이 이 의도를 덮는다(불변 규칙)
+
+    ⚠️ 이 검사는 **한 칸씩** 이름을 대지 않는다. 그러면 나중에 칸이 하나 늘 때
+    그것만 조용히 사라져도 초록이다 — *"점검 전에 알던 것을 점검 뒤에도 아는가"*
+    를 통째로 묻는다.
+    """
+    remember_search(brain, USER, "무선 이어폰", [_c("소니 WF-1000XM5", 289_000)])
+    row = watchlist(brain, USER)[0]
+    before = dict(brain.get_entity(USER, row["wish_id"]).attrs or {})
+    assert before.get("provenance") == "user", "★측정 무효★ 잴 것이 애초에 없습니다"
+
+    shopping.remember_check(brain, USER, row["wish_id"])
+
+    after = dict(brain.get_entity(USER, row["wish_id"]).attrs or {})
+    assert after.get("last_checked"), "점검한 시각을 안 적었습니다"
+    lost = sorted(k for k in before if k not in after)
+    assert not lost, f"점검이 이 의도가 알던 것을 지웠습니다: {lost}"
+    assert all(after[k] == v for k, v in before.items()), "값이 바뀌었습니다"
+
+
+def test_a_pinned_wish_is_still_checked_off(brain):
+    """★고정은 **사실**을 지키는 것이지 살림을 얼리는 것이 아니다★
+
+    `upsert_entity`는 `pinned`이 걸린 노드의 자동 갱신을 통째로 무시한다. 거기에
+    점검 시각을 맡기면 고정한 의도만 **영영 안 적히고**, `due_for_recheck`가 늘
+    참이 되어 ★대화마다 웹 검색이 나간다★.
+    """
+    remember_search(brain, USER, "무선 이어폰", [_c("소니 WF-1000XM5", 289_000)])
+    row = watchlist(brain, USER)[0]
+    node = brain.get_entity(USER, row["wish_id"])
+    brain.update_entity(USER, row["wish_id"],
+                        attrs={**(node.attrs or {}), "pinned": True})
+
+    shopping.remember_check(brain, USER, row["wish_id"])
+
+    after = dict(brain.get_entity(USER, row["wish_id"]).attrs or {})
+    assert after.get("last_checked"), "고정한 의도는 점검 시각이 안 적힙니다"
+    assert after.get("pinned") is True, "고정을 지웠습니다"
+    assert not due_for_recheck(after["last_checked"]), \
+        "적었는데도 또 볼 때가 됐다고 합니다"
+
+
 def test_saying_i_bought_it_through_the_tool_is_written_down(brain, tmp_path):
     """*"샀나요?"* 의 답이 **어딘가에 남아야** 다음번에 안 묻는다."""
     agent = ShoppingPlugin()

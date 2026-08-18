@@ -643,13 +643,47 @@ def remember_check(brain, user_id: str, wish_id: str, *,
 
     ⚠️ ★알린 시각은 **알렸을 때만**★ 갱신한다. 점검할 때마다 갱신하면 조용히
     기다리는 기간이 영영 안 지나가고, 그러면 두 번째 알림이 나가지 않는다.
+
+    ## ⚠️ ★적을 것만 넘기면 **나머지가 지워진다**★ (2026-08-19 실측)
+
+    계약의 두 문은 attrs를 **반대로** 다룬다:
+
+        upsert_entity   기존 attrs와 **병합한다**
+        update_entity   attrs를 통째로 **갈아 끼운다**(`UPDATE nodes SET attrs=?`)
+
+    여기서 `update_entity`에 적을 것만 넘기고 있었다. 그래서 배경 점검이 **한 번
+    돌면** 그 의도의 나머지가 전부 사라졌다 — 실측으로 여덟 칸이 날아가고
+    `last_checked` 하나만 남았다:
+
+        전: confidence currency last_alert ontology_valid price provenance
+            query source_channel
+        후: last_checked
+
+    ★그 여덟이 전부 이 기능이 서 있는 바닥이었다★
+      · `price`·`currency` — *"그때 얼마였나"*. 없으면 *"내렸어요"* 를 말할 수 없다
+      · `last_alert`       — 조용히 기다리는 사흘. 없으면 **같은 물건을 매번 알린다**
+      · `provenance=user`  — 없으면 자동 파이프라인이 이 의도를 덮는다(불변 규칙)
+
+    ★그물이 못 잡은 이유★ 적는 것만 보고 **적고 나서 되읽는 것**을 안 봤다.
+    `test_a_background_check_keeps_everything_else_the_wish_knows`가 이제 본다.
+
+    ★그래서 **우리가 병합해서** 넘긴다★ — `upsert_entity`에 맡기지 않는 이유가
+    하나 더 있다: 사용자가 이 의도를 고정(`pinned`)해 두면 그 문은 자동 갱신을
+    통째로 무시한다. 그러면 점검 시각이 영영 안 적히고, `due_for_recheck`가 늘
+    참이 되어 ★배경 검색이 대화마다 돈다★. `pinned`가 지키려는 것은 **사실**이지
+    *"언제 봤나"* 라는 살림이 아니다(저장소의 다른 자리도 같은 모양이다 —
+    `memory_lite/facet_growth.py`).
     """
     stamp = now or now_ts()
     attrs = {"last_checked": stamp}
     if alerted:
         attrs["last_alert"] = stamp
     try:
-        brain.update_entity(user_id, wish_id, attrs=attrs)
+        node = brain.get_entity(user_id, wish_id)
+        if node is None:
+            return                         # 사용자가 지웠다 — 되살리지 않는다
+        brain.update_entity(user_id, wish_id,
+                            attrs={**(node.attrs or {}), **attrs})
     except Exception:
         pass                               # 못 적으면 다음번에 다시 본다
 
