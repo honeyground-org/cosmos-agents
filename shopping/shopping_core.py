@@ -107,6 +107,103 @@ MAX_KEPT = PAGE_SIZE * 3
 PRICE_CHANGE_MIN_RATIO = 0.02
 
 
+# ── ★값이 내리면 **먼저** 알린다**★ (Sean 요구 2026-08-18) ────────────────────
+#
+# > *"백그라운드에서 **아직 구매 여부를 확인**이 되었다면 그리고 **아직 구매 욕구가
+# >  있다**는 것을 확인한 경우, **가격 인하나 특별 이벤트**가 생기는 경우 **바로
+# >  알림**을 해서 구매를 도울 수 있도록 하는 것이 목표에 있어야 함."*
+#
+# 화면을 열어야 보이는 것은 절반만 만든 것이다 — 사려던 물건이 싸졌을 때 사람이
+# 그것을 알려면 **때를 놓치지 않아야** 하고, 그러려면 코스모스가 먼저 말해야 한다.
+#
+# ⚠️ ★알림은 비싸다★ 대화를 끊고 목소리로 나간다. 그래서 화면에 그리는 문턱
+# (`PRICE_CHANGE_MIN_RATIO` = 2%)보다 **훨씬 높다** — 화면은 지나가다 보는 것이고
+# 알림은 하던 일을 멈추게 하는 것이다. 잔소리가 되는 순간 이 통로 전체가 값을 잃는다.
+ALERT_MIN_RATIO = 0.07        # 7% 넘게 내렸을 때만 말을 건다
+ALERT_MIN_DELTA = 3_000       # …그리고 실제 금액도 이만큼은 내려야 한다
+
+# 같은 물건을 얼마 만에 다시 알릴 수 있나. 값이 오르내리는 물건은 문턱만으로는
+# 하루에 몇 번씩 울린다.
+ALERT_QUIET_SEC = 3 * 24 * 3600
+
+# 배경에서 값을 다시 보는 주기. 더 자주 보면 검색만 늘고 알릴 것은 안 는다.
+RECHECK_EVERY_SEC = 12 * 3600
+
+
+def still_wanted(row: dict, *, now: str = "") -> bool:
+    """이 물건을 **아직 사려고 하는가**. ★순수 함수★ (Sean 조건 ①②)
+
+    셋 중 하나라도 아니면 지켜보지 않는다:
+
+      ① ★샀다고 확인된 것★ — 사고 나서 *"더 싸졌어요"* 는 도움이 아니라 상처다
+      ② ★그만두겠다고 한 것★ — 사람이 접은 것을 우리가 계속 들이밀지 않는다
+      ③ ★너무 오래된 것★ — 반 년 전 마음을 지금 마음으로 치면 그것은 참견이다
+
+    ⚠️ ★"결제까지 갔다"는 **샀다가 아니다**★ 우리가 결제를 실행하지 않으므로 알
+    방법이 없다. 그래서 `checkout_at`만으로는 끄지 않고, 사람이 *"샀어"* 라고 답한
+    것(`bought_at`)만 끈다 — 추측으로 끄면 정말 아직 안 산 사람의 알림이 사라진다.
+    """
+    if not isinstance(row, dict):
+        return False
+    if str(row.get("bought_at") or "").strip():
+        return False                       # ① 샀다고 **말했다**
+    if str(row.get("dropped_at") or "").strip():
+        return False                       # ② 그만두겠다고 말했다
+    return not _is_stale(str(row.get("seen_at") or ""), now)   # ③
+
+
+def due_for_recheck(last_checked: str, *, now: str = "",
+                    every_sec: float = RECHECK_EVERY_SEC) -> bool:
+    """배경에서 다시 볼 때가 됐나. ★순수 함수★
+
+    한 번도 안 봤으면 **본다**(빈 값을 "방금 봤다"로 읽으면 영영 안 본다 — 이
+    저장소가 여러 번 데인 모양이다).
+    """
+    from datetime import datetime
+    if not str(last_checked or "").strip():
+        return True
+    try:
+        then = datetime.fromisoformat(last_checked)
+        current = datetime.fromisoformat(now) if now else datetime.now()
+    except ValueError:
+        return True                        # 못 읽는 값은 "모른다"이지 "방금"이 아니다
+    return (current - then).total_seconds() >= max(60.0, float(every_sec))
+
+
+def worth_interrupting(before: int, after: int, *, last_alert: str = "",
+                       now: str = "") -> dict:
+    """이 값 변화로 **하던 일을 멈추게 해도 되는가**. ★순수 함수★
+
+    돌려주는 것은 판정과 **그 이유**다 — 이유 없는 알림은 광고와 구별되지 않고,
+    사용자가 *"왜 이걸 지금 말하지"* 라고 물을 때 답할 것이 있어야 한다.
+
+    ★오른 것은 알리지 않는다★ *"12,000원 올랐어요"* 로 살 수 있는 사람은 없다.
+    올랐다는 사실은 화면이 말한다(거기서는 값이 있다 — 기다릴지 정하는 재료다).
+    """
+    move = price_change(int(before or 0), int(after or 0))
+    if move["direction"] != "down":
+        return {"tell": False, "reason": "not_cheaper", **move}
+    if move["ratio"] < ALERT_MIN_RATIO or abs(move["delta"]) < ALERT_MIN_DELTA:
+        return {"tell": False, "reason": "too_small", **move}
+    if not _quiet_enough(last_alert, now):
+        # ★같은 물건으로 이틀 연속 말을 걸면 두 번째부터는 안 듣는다★
+        return {"tell": False, "reason": "told_recently", **move}
+    return {"tell": True, "reason": "cheaper", **move}
+
+
+def _quiet_enough(last_alert: str, now: str = "") -> bool:
+    from datetime import datetime
+    if not str(last_alert or "").strip():
+        return True
+    try:
+        then = datetime.fromisoformat(last_alert)
+        current = datetime.fromisoformat(now) if now else datetime.now()
+    except ValueError:
+        return True
+    return (current - then).total_seconds() >= ALERT_QUIET_SEC
+
+
+
 @dataclass
 class Candidate:
     """상품 후보 하나 — 소스가 뭐든 **이 모양**으로 들어온다.
@@ -241,7 +338,7 @@ def money(price, currency: str = "KRW") -> str:
     말하는 쪽(`_say`)에 따로 적혀 있었고, 그래서 한쪽만 고치면 *"화면은 289,000
     KRW인데 말로는 289000원"* 이 됐다.
     """
-    from cosmos.core import i18n
+    import shopping_i18n as i18n
     try:
         value = int(price or 0)
     except (TypeError, ValueError):
@@ -462,6 +559,99 @@ def _same_intent(a: str, b: str) -> bool:
     `wirelessearbuds`가 같아지는데, 그 둘은 실제로 같은 물건이다.)
     """
     return a.replace(" ", "").lower() == b.replace(" ", "").lower()
+
+
+# ── ★답을 **적는다**★ — 안 적으면 열 번을 물어도 매번 처음이다 ───────────────
+#
+# `_headlines`가 *"샀나요?"* 라고 묻고 있었는데 **그 답이 아무 데도 안 남았다**
+# (2026-08-19 실측). 그래서 같은 물건을 볼 때마다 같은 것을 물었고, 무엇보다
+# ★산 사람에게도 "더 싸졌어요"라고 말하게 된다★ — 도움이 아니라 상처다.
+
+OUTCOMES = {
+    # 사람이 **말한 것**만 여기 들어온다. 우리가 결제를 실행하지 않으므로 추측은 없다.
+    "bought":  {"attr": "bought_at",  "desc": "The person said they bought it"},
+    "dropped": {"attr": "dropped_at", "desc": "The person said they are not buying it"},
+}
+
+
+def remember_outcome(brain, user_id: str, query: str, title: str, outcome: str,
+                     *, now: str = "") -> str:
+    """*"샀어"* · *"안 살래"* 를 남긴다. 남긴 상품 id(없으면 빈 문자열).
+
+    ★`provenance="user"`다★ 사람이 말한 것이므로 어떤 자동 파이프라인도 덮지 못하고,
+    지웠던 항목이라도 사람이 다시 말하면 되살아난다(툼스톤 통과 규칙).
+
+    ★되돌릴 수 있다★ `outcome=""`면 표시를 지운다 — *"아 아직 안 샀어"* 라고 다시
+    말할 수 있어야 한다. 못 되돌리는 기록은 사람이 말하기를 망설이게 만든다.
+    """
+    spec = OUTCOMES.get(str(outcome or "").strip().lower())
+    if outcome and spec is None:
+        return ""
+    wish = _find_wish(brain, user_id, query)
+    if wish is None:
+        return ""
+    want = _normalise_title(title)
+    stamp = now or now_ts()
+    trust = Trust(confidence=1.0, provenance="user", source_channel=CHANNEL)
+    for entity, _relation in brain.neighbors(user_id, wish.id, rel="considering"):
+        if _normalise_title(entity.name) != want:
+            continue
+        # ★attrs는 병합된다★ 다음 검색이 가격을 갱신해도 이 표시는 남는다.
+        marks = {row["attr"]: "" for row in OUTCOMES.values()}   # 둘 다 비우고
+        if spec:
+            marks[spec["attr"]] = stamp                          # 하나만 채운다
+        return brain.upsert_entity(user_id, Entity(
+            name=entity.name, kind=PRODUCT_KIND,
+            attrs={**trust.to_attrs(), **marks}, valid_from=stamp))
+    return ""
+
+
+def watchlist(brain, user_id: str, *, now: str = "") -> list[dict]:
+    """★배경에서 지켜볼 것★ — 아직 안 샀고, 접지 않았고, 오래되지 않은 것.
+
+    되읽는 문이다(원칙 0 ③): 이것이 없으면 `remember_outcome`은 쌓기만 하고
+    쓰는 곳이 없어진다 — 이 저장소가 여섯 번 데인 그 실패.
+
+    한 의도에 후보가 여럿이면 **가장 싼 것 하나**만 지켜본다. 넷을 다 지켜보면
+    한 물건으로 알림이 넷 울린다.
+    """
+    out = []
+    for wish in brain.find_entities(user_id, kind="wish"):
+        attrs = wish.attrs or {}
+        rows = []
+        for entity, relation in brain.neighbors(user_id, wish.id, rel="considering"):
+            row = dict(entity.attrs or {})
+            row["title"] = entity.name
+            row["price"] = int((relation.attrs or {}).get("price") or row.get("price") or 0)
+            row["seen_at"] = (relation.attrs or {}).get("seen_at") or row.get("seen_at", "")
+            if row["price"] and still_wanted(row, now=now):
+                rows.append(row)
+        if not rows:
+            continue
+        rows.sort(key=lambda r: r["price"])
+        out.append({"query": attrs.get("query") or wish.name,
+                    "wish_id": wish.id,
+                    "last_alert": attrs.get("last_alert", ""),
+                    "last_checked": attrs.get("last_checked", ""),
+                    "watching": rows[0]})
+    return out
+
+
+def remember_check(brain, user_id: str, wish_id: str, *,
+                   alerted: bool = False, now: str = "") -> None:
+    """배경 점검을 **언제 했는지** 적는다 — 안 적으면 매번 다시 검색한다.
+
+    ⚠️ ★알린 시각은 **알렸을 때만**★ 갱신한다. 점검할 때마다 갱신하면 조용히
+    기다리는 기간이 영영 안 지나가고, 그러면 두 번째 알림이 나가지 않는다.
+    """
+    stamp = now or now_ts()
+    attrs = {"last_checked": stamp}
+    if alerted:
+        attrs["last_alert"] = stamp
+    try:
+        brain.update_entity(user_id, wish_id, attrs=attrs)
+    except Exception:
+        pass                               # 못 적으면 다음번에 다시 본다
 
 
 def _find_wish(brain, user_id: str, query: str):

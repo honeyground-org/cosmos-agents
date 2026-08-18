@@ -45,13 +45,14 @@ from __future__ import annotations
 
 import json
 
-from cosmos.core import i18n
+import shopping_i18n as i18n
 from cosmos.contracts import Plugin, ToolContext
 from shopping_core import (
-    Candidate, MAX_KEPT, MIGRATION_MARK_FILE, PAGE_SIZE, TRUST_SIGNALS,
-    cheapest_index, compare_with_past, migrate_products_once, money,
-    origin_of, page_of, rank, recall_search, remember_checkout,
-    remember_search, signals_worth_showing,
+    Candidate, MAX_KEPT, MIGRATION_MARK_FILE, OUTCOMES, PAGE_SIZE, TRUST_SIGNALS,
+    cheapest_index, compare_with_past, due_for_recheck, migrate_products_once,
+    money, origin_of, page_of, rank, recall_search, remember_check,
+    remember_checkout, remember_outcome, remember_search, signals_worth_showing,
+    watchlist, worth_interrupting,
 )
 
 # 모델에게 주는 지시 — **정규형으로 옮기는 일만** 시킨다. 판정(순위·신뢰)을 맡기면
@@ -98,6 +99,10 @@ class ShoppingPlugin(Plugin):
     )
     # ★원하는 사람만 들인다★ — ③ 돈이 걸린다
     optional = True
+    # ★값이 내리면 **먼저** 말한다★ (Sean 요구 2026-08-18) 화면을 열어야 보이는 것은
+    # 절반만 만든 것이다 — 사려던 물건이 싸졌을 때 때를 놓치면 그 정보는 값이 없다.
+    # 사용자가 이 훅을 끄면 `hooks.enabled()`가 먼저 걸러 `advise()`가 안 불린다.
+    raises_notices = True
     # ★말로 이렇게 시킨다★ — 사용자가 이 카드에서 읽는 사용법이다
     howto = (
         "I am thinking about buying a standing desk",
@@ -126,7 +131,13 @@ class ShoppingPlugin(Plugin):
                                       "see more, the next ones, or others). "
                                       "prev — go back one page. "
                                       "checkout — start paying for one already found. "
-                                      "open — open that one in the browser."},
+                                      "open — open that one in the browser. "
+                                      "bought — the user says they got it (stop watching "
+                                      "the price and stop asking). "
+                                      "dropped — the user says they are not buying it "
+                                      "after all. "
+                                      "still_looking — they have not bought it yet; undo "
+                                      "either of those two."},
             "index": {"type": "INTEGER",
                       "description": "Which candidate from the last comparison "
                                      "(1 = the recommended one). For checkout and open."},
@@ -182,10 +193,20 @@ class ShoppingPlugin(Plugin):
     # 이 표의 같은 이름으로 들어온다 — 화면의 단추도 `{"action": "next"}`를 보낸다.
     _PAGE_ACTIONS = ("next", "prev")
 
+    # ★사람이 **말한 것**만 여기 들어온다★ 우리가 결제를 실행하지 않으므로 "샀다"는
+    # 추측할 수 없다. 이 표가 없으면 *"샀나요?"* 를 물어 놓고 답을 버리게 된다.
+    _OUTCOME_ACTIONS = tuple(OUTCOMES) + ("still_looking",)
+
+    def __init__(self) -> None:
+        # 이 과정에서 띄워 둔 알림 — 내릴 때 무엇을 내릴지 알아야 한다
+        self._raised: set[str] = set()
+
     def run(self, ctx: ToolContext, **args) -> str:
         action = str(args.get("action") or "search").strip().lower()
         if action in self._PAGE_ACTIONS:
             return self._turn_page(ctx, action)
+        if action in self._OUTCOME_ACTIONS:
+            return self._settle(ctx, action, args.get("index"))
         if action in self._PANEL_ACTIONS:
             return self._from_panel(ctx, action, args.get("index"))
         query = str(args.get("query") or "").strip()
@@ -271,6 +292,142 @@ class ShoppingPlugin(Plugin):
         return i18n.t("Numbers {first} to {last} of {total}, page {page} of {pages}.",
                       first=first, last=first + len(shown) - 1, total=len(items),
                       page=page + 1, pages=pages)
+
+    # -- ★값이 내리면 먼저 말한다★ (Sean 요구 2026-08-18) --------------------
+    def advise(self, ctx: ToolContext) -> None:
+        """배경에서 지켜보다 **싸졌을 때** 알린다 — 그리고 해소되면 스스로 내린다.
+
+        ## 왜 이 훅인가
+
+        화면을 열어야 보이는 것은 절반만 만든 것이다. *"지난주에 망설이던 그것"* 이
+        싸진 사실은 **때를 놓치면 값이 없다**(할인은 끝난다).
+
+        ## ⚠️ 한 번에 **하나만** 본다
+
+        `advise()`는 말이 오갈 때마다 불린다. 여기서 지켜보는 것을 전부 다시 검색하면
+        대화 한 번에 웹 검색이 열 번 나간다. 그래서 **점검할 때가 된 것 하나**만
+        고르고, 나머지는 다음 차례에 본다.
+
+        ## 알림은 **상태**다
+
+        같은 키로 다시 부르면 덮어쓴다. 사람이 *"샀어"* 라고 하면 그 물건은
+        `watchlist`에서 빠지고, 그 순간 이 함수가 **알림을 내린다**(`clear`).
+        내려가지 않는 알림은 두 번째부터 무시당한다.
+        """
+        brain = getattr(ctx, "brain", None)
+        if brain is None or not callable(getattr(ctx, "notice", None)):
+            return
+        uid = getattr(ctx, "user_id", "local")
+        try:
+            watching = watchlist(brain, uid)
+        except Exception:
+            return
+
+        # ★해소되면 스스로 내려간다★ 지켜볼 것에서 빠진 물건의 알림은 여기서 사라진다.
+        open_keys = {self._notice_key(row["query"]) for row in watching}
+        for key in list(self._raised - open_keys):
+            self._clear(ctx, key)
+
+        row = next((r for r in watching if due_for_recheck(r["last_checked"])), None)
+        if row is None:
+            return
+        self._check_one(ctx, row)
+
+    def _check_one(self, ctx: ToolContext, row: dict) -> None:
+        """지켜보던 것 하나를 다시 보고, 말할 만하면 알린다."""
+        brain, uid = ctx.brain, getattr(ctx, "user_id", "local")
+        watching = row["watching"]
+        try:
+            fresh = rank(self._find(ctx, row["query"]))
+        except Exception:
+            return
+        # ★같은 상품을 찾는다★ 다른 물건이 싸진 것을 "그게 싸졌다"고 말하면 거짓말이다
+        same = next((c for c in fresh
+                     if c.key() == Candidate(title=watching["title"]).key()), None)
+        if same is None or not same.price:
+            remember_check(brain, uid, row["wish_id"])
+            return
+
+        verdict = worth_interrupting(watching["price"], same.price,
+                                     last_alert=row["last_alert"])
+        if not verdict["tell"]:
+            remember_check(brain, uid, row["wish_id"])
+            return
+
+        # ★새 값을 기억에 남긴다★ 안 남기면 다음번에 **같은 인하를 또** 알린다
+        try:
+            remember_search(brain, uid, row["query"], fresh, agent=self)
+        except Exception:
+            pass
+        ctx.notice(
+            self._notice_key(row["query"]),
+            # ★말로 나가는 줄이다★ 읽는 글이 아니라 **하는 말**로 쓴다
+            i18n.t("{title} is {amount} cheaper than when you looked.",
+                   title=same.title,
+                   amount=money(abs(verdict["delta"]), same.currency)),
+            level="warn",
+            detail=i18n.t("Now {price} at {seller}.",
+                          price=money(same.price, same.currency),
+                          seller=same.seller or i18n.t("the shop")),
+            action={"label": i18n.t("Show me"), "tool": self.name,
+                    "args": {"query": row["query"]}})
+        self._raised.add(self._notice_key(row["query"]))
+        remember_check(brain, uid, row["wish_id"], alerted=True)
+
+    @staticmethod
+    def _notice_key(query: str) -> str:
+        """★의도마다 하나★ 상품마다 키를 만들면 한 물건으로 알림이 넷 뜬다."""
+        return "price:" + str(query or "")[:80]
+
+    def _clear(self, ctx: ToolContext, key: str) -> None:
+        try:
+            ctx.clear_notice(key)
+        except Exception:
+            pass
+        self._raised.discard(key)
+
+    # -- ★"샀어" · "안 살래" 를 적는다★ ---------------------------------------
+    def _settle(self, ctx: ToolContext, action: str, index) -> str:
+        """*"샀나요?"* 의 답을 남긴다.
+
+        ★안 적으면 열 번을 물어도 매번 처음이다★ 그리고 무엇보다 **산 사람에게도
+        "더 싸졌어요"라고 말하게 된다** — 도움이 아니라 상처다.
+        """
+        state = _load(ctx)
+        items = state.get("items") or []
+        try:
+            position = int(index or 1)
+        except (TypeError, ValueError):
+            position = 1
+        if not (1 <= position <= len(items)):
+            position = 1
+        if not items:
+            return i18n.t("Which one? Search for it and I will line them up.")
+        title = str(items[position - 1].get("title") or "")
+        outcome = "" if action == "still_looking" else action
+
+        brain = getattr(ctx, "brain", None)
+        if brain is None or not state.get("query"):
+            return i18n.t("I could not write that down.")
+        try:
+            remember_outcome(brain, getattr(ctx, "user_id", "local"),
+                             state["query"], title, outcome)
+        except Exception as e:
+            ctx.write_log("[shopping] " + i18n.t(
+                "Could not write down what you decided: {detail}", detail=e))
+            return i18n.t("I could not write that down.")
+        # 지켜보기를 그만두는 순간 알림도 내려간다(해소되면 사라진다)
+        if outcome:
+            self._clear(ctx, self._notice_key(state["query"]))
+        if action == "bought":
+            return self._notice(ctx, state, i18n.t(
+                "Got it -- {title} is yours. I will stop watching that price.",
+                title=title))
+        if action == "dropped":
+            return self._notice(ctx, state, i18n.t(
+                "Alright, I will stop bringing up {title}.", title=title))
+        return self._notice(ctx, state, i18n.t(
+            "Noted -- still looking at {title}.", title=title))
 
     def _from_panel(self, ctx: ToolContext, action: str, index) -> str:
         """패널 단추에서 온 호출. 주소·상품명은 **우리 상태에서** 꺼낸다.

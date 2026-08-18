@@ -6,7 +6,7 @@
 # fall back to English when one is missing.
 id: honeyground-org/shopping
 type: feature
-version: 1.0.0
+version: 1.1.0
 contract: plugin/v1
 title: Shopping scout
 # ★설치 화면은 코드를 받기 **전에** 그려진다★ — 그래서 무엇을 기억하는지가 여기
@@ -20,7 +20,10 @@ description: >-
   commission; where a link pays us is written on that row. Nothing you weighed
   while choosing becomes a permanent "taste" of yours — it rides on that one
   decision and goes when it goes. It can hand a purchase to Wallet, but the last
-  button is always yours.
+  button is always yours. And it watches in the background: if something you are
+  still thinking about drops in price, it tells you at that moment rather than
+  waiting for you to open a screen -- and it stops the moment you say you bought
+  it.
 # ★번역은 **인덱스 항목**에 있다★ 매니페스트는 `title_i18n`·`description_i18n`을
 # 읽지 않는다(검증기가 *"this version ignores it"* 이라고 말한다). 무시되는 칸을
 # 여기 적어 두면 다음 사람은 있는 줄 알고 배선했다가 영영 빈 값을 받는다.
