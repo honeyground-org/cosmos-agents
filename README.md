@@ -7,6 +7,7 @@ each in its own folder.
 |---|---|---|
 | [`shopping/`](shopping/) | `honeyground-org/shopping` | Remembers what you were thinking of buying and tells you when the price moves |
 | [`flights/`](flights/) | `honeyground-org/flights` | Remembers where you were trying to fly and tells you when that fare drops |
+| [`youtube/`](youtube/) | `honeyground-org/youtube` | Keeps what you published — titles, tags, when — and hands them back next time |
 
 ## Why one repository
 
