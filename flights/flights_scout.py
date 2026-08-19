@@ -125,6 +125,8 @@ _EXTRACT = (
     '{"airline": str, "origin": str, "destination": str, "depart": str (YYYY-MM-DD '
     'or empty), "stops": int, "duration_minutes": int (total travel time, 0 if the '
     'results do not say), "price": int (0 if unknown), "currency": "KRW"|"USD"|…,\n'
+    ' "fare_type": "round_trip" | "one_way" | "" (what the price covers -- leave it\n'
+    '   EMPTY unless the results actually say; the user reads this as money),\n'
     ' "url": str, "note": str (one short sentence)}\n'
     "★Never invent a price, a date, a duration or a flight that is not in the "
     "results. Use 0 or an empty string when unknown -- a guessed number becomes a "
@@ -153,6 +155,10 @@ class Flight:
     depart: str = ""
     stops: int = 0
     minutes: int = 0
+    # ★이 값이 **무엇을 덮는가**★ `round_trip` · `one_way` · 빈 문자열(모른다).
+    # 돈에 관한 것이라 ★모르면 모른다고 둔다★ — 왕복으로 찾았다고 편도 값을
+    # 왕복 값으로 읽게 하면 사용자는 두 배를 잘못 계산한다.
+    fare_type: str = ""
     price: int = 0
     currency: str = ""
     url: str = ""
@@ -167,7 +173,86 @@ class Flight:
 
 # ── 판정 — ★순수 함수★ ──────────────────────────────────────────────────────
 
-def route_name(origin: str, destination: str, depart: str = "") -> str:
+@dataclass(frozen=True)
+class Trip:
+    """★사용자가 말한 **조건 한 덩어리**★ (Sean 요구 2026-08-19)
+
+    > *"원하는 항공사와 날짜를 전달하면, 그 외 조건 왕복 여부 등을 전달하면 그에
+    >  맞는 항공권을 보여주면 좋음"*
+
+    조건을 인자로 흩어 두면 **가는 자리마다 하나씩 빠진다** — 실제로 `return_on`이
+    선언만 되고 아무도 안 쓰고 있었다(고르는 화면에도, 검색어에도, 기억에도 없었다).
+    한 덩어리로 다니면 검색·필터·기억·배경 재점검이 **같은 것**을 본다.
+
+    ⚠️ ★조건은 **열쇠의 일부**다★ 왕복과 편도는 값이 다른 별개의 물건이고,
+    *"대한항공으로"* 는 값을 지켜볼 대상 자체를 바꾼다. 열쇠에서 빼면 어제 본
+    대한항공 값과 오늘 본 아무 항공사 값을 빼서 ★있지도 않은 인하★를 말하게 된다.
+    """
+
+    origin: str = ""
+    destination: str = ""
+    depart: str = ""
+    return_on: str = ""
+    airline: str = ""
+    nonstop: bool = False
+
+    @property
+    def round_trip(self) -> bool:
+        return bool(self.return_on)
+
+
+def trip_of(args: dict) -> Trip:
+    """도구 인자를 조건 한 덩어리로. ★못 읽는 날짜는 **없는 것**이다★ ★순수 함수★"""
+    args = args if isinstance(args, dict) else {}
+    return Trip(origin=str(args.get("origin") or "").strip(),
+                destination=str(args.get("destination") or "").strip(),
+                depart=_date(args.get("depart", "")),
+                return_on=_date(args.get("return_on", "")),
+                airline=str(args.get("airline") or "").strip()[:60],
+                nonstop=_truthy(args.get("nonstop")))
+
+
+def _truthy(value) -> bool:
+    """모델은 `true`를 문자열로도 준다. ★"false"를 참으로 읽으면 직항만 남는다★"""
+    if isinstance(value, str):
+        return value.strip().lower() in ("true", "yes", "1", "y")
+    return bool(value)
+
+
+def matches_trip(flight: "Flight", trip: Trip) -> bool:
+    """이 항공편이 **사용자가 말한 조건**에 맞나. ★순수 함수★
+
+    ★항공사는 **느슨하게** 견준다★ 결과가 *"Korean Air"* · *"대한항공"* · *"KE"* 로
+    제각각 오는데, 딱 맞는 것만 남기면 사용자는 *"대한항공으로"* 라고 말하고 빈
+    화면을 받는다. 한쪽이 다른 쪽에 들어 있으면 같은 것으로 본다.
+
+    ## ⚠️ ★왕복을 물었으면 **편도 값을 섞지 않는다**★ (2026-08-19 · 찍어 보고 알았다)
+
+    첫 그림에서 *"추천"* 이 **189,000 편도**에 붙어 있었다 — 사용자는 왕복을 물었고,
+    같은 화면에 **212,000 왕복**이 있었는데도. 편도를 왕복으로 치면 대략 378,000이니
+    그 추천은 정반대였다. ★값이 덮는 범위가 다르면 그 둘은 견줄 수 없다★(통화가
+    다르면 안 빼는 것과 같은 이유).
+
+    ⚠️ ★비대칭이 정당하다★ 반대로 편도를 찾을 때 왕복 값이 섞이는 것은 막지 않는다 —
+    날짜만 준 검색은 *"그냥 도쿄행"* 이라 왕복 값도 참고가 되고, 카드가 *"왕복"* 이라고
+    말하므로 사용자가 안다. **왕복이라고 말한 쪽만** 요구가 분명하다.
+
+    ★모르는 것은 안 버린다★ 값이 무엇을 덮는지 결과에 안 적힌 경우가 흔한데, 그것까지
+    버리면 왕복 검색은 거의 언제나 빈손이 된다.
+    """
+    if trip.nonstop and flight.stops:
+        return False
+    if trip.round_trip and flight.fare_type == "one_way":
+        return False
+    wanted = trip.airline.strip().lower()
+    if not wanted:
+        return True
+    got = str(flight.airline or "").strip().lower()
+    return bool(got) and (wanted in got or got in wanted)
+
+
+def route_name(origin: str, destination: str, depart: str = "", *,
+               return_on: str = "", airline: str = "", nonstop: bool = False) -> str:
     """이 노선을 부르는 이름. ★기억을 합치는 열쇠이기도 하다★ —
     이름이 갈리면 같은 노선을 두 곳에 쌓는다.
 
@@ -182,13 +267,40 @@ def route_name(origin: str, destination: str, depart: str = "") -> str:
     답일 뿐이다(불변 규칙: 사용자 발화가 이긴다).
 
     날짜를 안 말했으면 이름에도 없다 — 그것은 *"언젠가 도쿄"* 라는 다른 의도다.
+
+    ## ★조건도 이름에 들어간다★ (Sean 요구 2026-08-19)
+
+    같은 이유가 **왕복 여부**와 **항공사**에도 그대로 걸린다. 왕복은 편도와 값이
+    다른 별개의 물건이고, *"대한항공으로"* 는 지켜볼 대상 자체를 바꾼다. 열쇠에서
+    빼면 어제 본 대한항공 값과 오늘 본 아무 항공사 값을 빼서 ★있지도 않은 인하★를
+    말한다. 이름이 곧 *"무엇을 지켜보는가"* 다:
+
+        Flights ICN to Tokyo on 2026-09-10
+        Flights ICN to Tokyo on 2026-09-10 returning 2026-09-14
+        Flights ICN to Tokyo on 2026-09-10 with Korean Air, nonstop
     """
     start, end = _place(origin), _place(destination)
-    when = _date(depart)
+    when, back = _date(depart), _date(return_on)
     if not end:
         return ""
-    where = f"Flights {start} to {end}" if start else f"Flights to {end}"
-    return f"{where} on {when}" if when else where
+    name = f"Flights {start} to {end}" if start else f"Flights to {end}"
+    if when:
+        name += f" on {when}"
+    if back:
+        name += f" returning {back}"
+    # ★조건은 **정해진 차례로** 붙인다★ 순서가 흔들리면 같은 조건이 두 이름이 되고,
+    # 그러면 같은 것을 두 곳에 쌓는다(이름은 기억을 합치는 열쇠다).
+    extra = [f"with {_place(airline)}"] if str(airline or "").strip() else []
+    if nonstop:
+        extra.append("nonstop")
+    return f"{name} {', '.join(extra)}" if extra else name
+
+
+def route_name_of(trip: Trip) -> str:
+    """조건 한 덩어리에서 열쇠를. ★부르는 자리마다 칸을 하나씩 빠뜨리지 않도록★"""
+    return route_name(trip.origin, trip.destination, trip.depart,
+                      return_on=trip.return_on, airline=trip.airline,
+                      nonstop=trip.nonstop)
 
 
 def _place(text: str) -> str:
@@ -225,12 +337,27 @@ def to_flights(raw, *, now: str = "") -> list[Flight]:
             depart=str(row.get("depart") or "").strip(),
             stops=_int(row.get("stops")),
             minutes=_int(row.get("duration_minutes")),
+            fare_type=_fare_type(row.get("fare_type")),
             price=_int(row.get("price")),
             currency=str(row.get("currency") or "").strip().upper(),
             url=str(row.get("url") or "").strip(),
             note=str(row.get("note") or "").strip()[:200],
             seen_at=stamp))
     return out
+
+
+def _fare_type(value) -> str:
+    """★아는 둘만 통과한다★ 모델이 지어낸 낱말이 화면에 그대로 뜨면 그것은 정보가
+    아니라 오류로 읽힌다. 모르면 빈 문자열 — 그때는 화면이 아무 말도 안 한다."""
+    got = str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
+    return got if got in ("round_trip", "one_way") else ""
+
+
+def fare_type_text(fare_type: str) -> str:
+    """값이 무엇을 덮는지 한 낱말. 모르면 빈 문자열(빈칸이 곧 *"모른다"* 다)."""
+    if fare_type == "round_trip":
+        return i18n.t("Round trip")
+    return i18n.t("One way") if fare_type == "one_way" else ""
 
 
 def _int(value) -> int:
@@ -604,9 +731,13 @@ OUTCOMES: dict[str, dict] = {
 
 
 def remember_search(brain, user_id: str, origin: str, destination: str,
-                    flights: list[Flight], *, depart: str = "", agent=None,
-                    now: str = "") -> str:
+                    flights: list[Flight], *, depart: str = "", trip: Trip | None = None,
+                    agent=None, now: str = "") -> str:
     """이번 검색을 남긴다 — **의도(`wish`)와 목적지(`place`)로**.
+
+    ★조건도 함께 남는다★(Sean 요구 2026-08-19) 왕복인지·어느 항공사인지·직항만인지가
+    안 남으면 **배경 재점검이 다른 것을 보고 온다** — 그리고 그 값으로 *"내렸다"* 를
+    말하면 거짓말이 된다.
 
     ★가격은 **관측으로** 남긴다★ *"지금 89만원"* 이 아니라 *"이 시각에 89만원이었다"*
     이므로 나중에도 참이고, 그래야 다음번에 *"내렸다"* 를 말할 수 있다.
@@ -618,7 +749,8 @@ def remember_search(brain, user_id: str, origin: str, destination: str,
     `provenance="user"` — 어디에 가려는지는 사용자의 것이라 자동 파이프라인이
     덮으면 안 된다(불변 규칙).
     """
-    route = route_name(origin, destination, depart)
+    trip = trip or Trip(origin=origin, destination=destination, depart=_date(depart))
+    route = route_name_of(trip)
     if brain is None or not route:
         return ""
     stamp = now or now_ts()
@@ -626,8 +758,11 @@ def remember_search(brain, user_id: str, origin: str, destination: str,
     best = cheapest(flights)
     known = _wish_of(brain, user_id, route)
     attrs = {**trust.to_attrs(),
-             "origin": _place(origin), "destination": _place(destination),
-             "depart": _date(depart),
+             "origin": _place(trip.origin), "destination": _place(trip.destination),
+             "depart": trip.depart,
+             # ★조건을 남긴다★ 배경 재점검이 **같은 것**을 보고 오게 하는 재료다
+             "return_on": trip.return_on, "airline": trip.airline,
+             "nonstop": bool(trip.nonstop),
              "price": best.price if best else 0,
              "currency": best.currency if best else "",
              "seen_at": stamp, "last_searched": stamp}
@@ -642,7 +777,7 @@ def remember_search(brain, user_id: str, origin: str, destination: str,
         return ""                    # 사용자가 지운 항목은 되살리지 않는다(툼스톤)
 
     made = [wish_id]
-    where = _place(destination)
+    where = _place(trip.destination)
     if where:
         place_id = brain.upsert_entity(user_id, Entity(
             name=where[:120], kind="place",
@@ -690,10 +825,11 @@ def _wish_of(brain, user_id: str, route: str):
     return None
 
 
-def recall_route(brain, user_id: str, origin: str, destination: str,
-                 depart: str = "") -> dict:
-    """이 노선을 전에 봤나. 못 찾으면 빈 dict — ★지어내지 않는다★"""
-    route = route_name(origin, destination, depart)
+def recall_route(brain, user_id: str, origin: str = "", destination: str = "",
+                 depart: str = "", *, trip: Trip | None = None) -> dict:
+    """이 조건으로 전에 봤나. 못 찾으면 빈 dict — ★지어내지 않는다★"""
+    trip = trip or Trip(origin=origin, destination=destination, depart=_date(depart))
+    route = route_name_of(trip)
     entity = _wish_of(brain, user_id, route)
     if entity is None:
         return {}
@@ -703,6 +839,9 @@ def recall_route(brain, user_id: str, origin: str, destination: str,
             "price": int(attrs.get("price") or 0),
             "currency": attrs.get("currency", ""),
             "depart": attrs.get("depart", ""),
+            "return_on": attrs.get("return_on", ""),
+            "airline": attrs.get("airline", ""),
+            "nonstop": bool(attrs.get("nonstop")),
             "seen_at": attrs.get("seen_at", ""),
             "booked_at": attrs.get("booked_at", ""),
             "dropped_at": attrs.get("dropped_at", ""),
@@ -736,6 +875,9 @@ def tracked_routes(brain, user_id: str, *, now: str = "") -> list[dict]:
                     "wish_id": getattr(entity, "id", ""),
                     "destination": attrs.get("destination", ""),
                     "depart": attrs.get("depart", ""),
+                    "return_on": attrs.get("return_on", ""),
+                    "airline": attrs.get("airline", ""),
+                    "nonstop": bool(attrs.get("nonstop")),
                     "price": int(attrs.get("price") or 0),
                     "currency": attrs.get("currency", ""),
                     "seen_at": attrs.get("seen_at", ""),
@@ -770,6 +912,13 @@ def watchlist(brain, user_id: str, *, now: str = "") -> list[dict]:
                     "origin": attrs.get("origin", ""),
                     "destination": attrs.get("destination", ""),
                     "depart": attrs.get("depart", ""),
+                    # ★조건을 같이 낸다★ 없으면 배경 재점검이 **다른 것**을 보고 온다
+                    "trip": Trip(origin=attrs.get("origin", ""),
+                                 destination=attrs.get("destination", ""),
+                                 depart=attrs.get("depart", ""),
+                                 return_on=attrs.get("return_on", ""),
+                                 airline=attrs.get("airline", ""),
+                                 nonstop=bool(attrs.get("nonstop"))),
                     "price": int(attrs.get("price") or 0),
                     "currency": attrs.get("currency", ""),
                     "last_alert": attrs.get("last_alert", ""),
@@ -903,11 +1052,12 @@ class FlightsPlugin(Plugin):
         # ⚠️ 예문에 **못 박힌 날짜**를 쓰지 않는다 — 카드에 2026년이 박혀 있으면
         # 2027년 사용자에게 그 카드는 낡은 것으로 읽힌다.
         "Find flights to Tokyo leaving on the 10th",
+        "Korean Air to Tokyo, nonstop, back on the 14th",
         "Did that route get cheaper?",
         "Show the next ones",
         "I booked it",
     )
-    version = "0.2.0"
+    version = "0.3.0"
     author = "cosmos"
     description = ("Searches for flights on a route and compares them with what the "
                    "user saw last time, remembering the routes and destinations they "
@@ -925,7 +1075,17 @@ class FlightsPlugin(Plugin):
                        "description": "Departure date (YYYY-MM-DD) if known. The same "
                                       "route on another date is a different trip, so "
                                       "pass what the user actually said."},
-            "return_on": {"type": "STRING", "description": "Return date (YYYY-MM-DD) if known."},
+            "return_on": {"type": "STRING",
+                          "description": "Return date (YYYY-MM-DD). Pass it whenever "
+                                         "the user wants a round trip -- a return "
+                                         "changes the fare, so it is a different trip "
+                                         "from the one-way."},
+            "airline": {"type": "STRING",
+                        "description": "Only this airline, when the user named one "
+                                       "(\'Korean Air\', \'Peach\'). Leave empty to "
+                                       "compare all of them."},
+            "nonstop": {"type": "BOOLEAN",
+                        "description": "True when the user said direct or nonstop only."},
         },
         "required": [],
     }
@@ -982,50 +1142,93 @@ class FlightsPlugin(Plugin):
 
     # -- 검색 -----------------------------------------------------------------
     def _search(self, ctx: ToolContext, args: dict) -> str:
-        origin = str(args.get("origin") or "").strip()
-        destination = str(args.get("destination") or "").strip()
-        depart = str(args.get("depart") or "").strip()
-        if not destination:
+        trip = trip_of(args)
+        if not trip.destination:
             return i18n.t("Tell me where you want to fly to.")
-        route = route_name(origin, destination, depart)
+        route = route_name_of(trip)
         ctx.write_log(f"[flights] {route}")
 
         brain = getattr(ctx, "brain", None)
         uid = str(getattr(ctx, "user_id", "") or "local")
-        past = recall_route(brain, uid, origin, destination, depart)
-        found = rank(self._find(ctx, origin, destination, args))
+        past = recall_route(brain, uid, trip=trip)
+        found, dropped = self._find(ctx, trip)
+        found = rank(found)
         if not found:
-            return i18n.t("I could not find flights for {route}. Try naming the "
-                          "airports, or a different date.", route=route)
+            return self._nothing(route, trip, dropped)
         if brain is not None:
-            self._remember(ctx, origin, destination, found, depart)
+            self._remember(ctx, trip, found)
         diff = compare_with_past(past, found)
         # ★화면과 말이 **같은 판정**을 본다★ 두 곳에서 판정하면 서로 다른 것을 말한다.
-        self._remember_view(ctx, route, found, past, diff, depart)
+        self._remember_view(ctx, route, found, past, diff, trip)
         return self._say(route, found, diff)
 
-    def _find(self, ctx: ToolContext, origin: str, destination: str,
-              args: dict) -> list[Flight]:
-        """웹에서 찾아 **정규형으로** 옮긴다. 실패는 빈 목록이다(거짓말하지 않는다)."""
-        # ★검색어도 언어를 탄다★ 영어 낱말을 박아 두면 다른 언어 사용자는 엉뚱한
-        # 결과를 받는다 — 표시문이 아니라 **기능**이 언어에 묶이는 자리다(쇼핑 선례).
-        terms = i18n.t("flight ticket price")
-        when = str(args.get("depart") or "").strip()
-        query = " ".join(x for x in (origin, "to", destination, when, terms) if x)
+    def _nothing(self, route: str, trip: Trip, dropped: int) -> str:
+        """★못 찾았으면 **왜** 못 찾았는지까지 말한다★ (Sean 요구 2026-08-19)
+
+        조건을 받기 시작하면 빈손이 나오는 길이 하나 더 생긴다 — 표는 있는데 **그
+        조건에 맞는 것이** 없는 경우다. 그냥 *"못 찾았어요"* 라고 하면 사용자는
+        노선이나 날짜를 의심하고, 정작 풀 수 있는 조건은 손대지 않는다.
+        """
+        if dropped and (trip.airline or trip.nonstop):
+            if trip.airline and trip.nonstop:
+                return i18n.t("I found {count} flights, but none of them are nonstop "
+                              "on {airline}. Shall I drop one of those?",
+                              count=dropped, airline=_place(trip.airline))
+            if trip.airline:
+                return i18n.t("I found {count} flights, but none on {airline}.",
+                              count=dropped, airline=_place(trip.airline))
+            return i18n.t("I found {count} flights, but none of them are nonstop.",
+                          count=dropped)
+        return i18n.t("I could not find flights for {route}. Try naming the "
+                      "airports, or a different date.", route=route)
+
+    def _find(self, ctx: ToolContext, trip: Trip) -> tuple[list[Flight], int]:
+        """웹에서 찾아 **정규형으로** 옮기고 **조건으로 거른다**.
+
+        돌려주는 것은 (남은 것, ★조건 때문에 버린 수★)이다 — 버린 수를 안 세면
+        *"표는 있는데 그 항공사가 없다"* 와 *"아무것도 못 찾았다"* 를 구별해서
+        말할 수 없고, 그러면 사용자는 풀 수 있는 조건을 손대지 않는다.
+
+        실패는 빈 목록이다(거짓말하지 않는다).
+        """
+        query = self._query(trip)
         try:
             raw = ctx.run_tool("web_search", {"query": query})
         except Exception as e:
             ctx.write_log(f"[flights] search failed: {e}")
-            return []
+            return [], 0
         try:
             moved = ctx.think(f"{_EXTRACT}\n\nSearch results:\n{str(raw)[:6000]}")
         except Exception as e:
             ctx.write_log(f"[flights] could not read the results: {e}")
-            return []
+            return [], 0
         flights = to_flights(_only_json(moved))
         # ★모델이 엉뚱한 노선을 섞어 오면 버린다★ 우리가 물은 곳으로 가는 것만 남긴다
-        wanted = _place(destination).lower()
-        return [f for f in flights if wanted in f.destination.lower()] or flights
+        wanted = _place(trip.destination).lower()
+        on_route = [f for f in flights if wanted in f.destination.lower()] or flights
+        # ★조건은 **우리가** 건다★ 검색어에 넣는 것만으로는 안 걸린다 — 검색은 비슷한
+        # 것을 넉넉히 물어 오고, 모델은 그것을 옮기기만 한다(판정은 우리 코드다).
+        kept = [f for f in on_route if matches_trip(f, trip)]
+        return kept, len(on_route) - len(kept)
+
+    @staticmethod
+    def _query(trip: Trip) -> str:
+        """웹에 물을 한 줄. ★검색어도 언어를 탄다★ 영어 낱말을 박아 두면 다른 언어
+        사용자는 엉뚱한 결과를 받는다 — 표시문이 아니라 **기능**이 언어에 묶이는
+        자리다(쇼핑 선례).
+
+        ⚠️ ★조건을 검색어에 넣는 것과 **거르는 것은 다른 일**이다★ 넣으면 맞는 것이
+        더 많이 올라오고, 거르는 것은 그래도 섞여 온 것을 쳐낸다. 둘 다 해야 한다.
+        """
+        parts = [trip.origin, "to", trip.destination, trip.depart]
+        if trip.return_on:
+            parts += [i18n.t("return"), trip.return_on]
+        if trip.airline:
+            parts.append(trip.airline)
+        if trip.nonstop:
+            parts.append(i18n.t("nonstop"))
+        parts.append(i18n.t("flight ticket price"))
+        return " ".join(x for x in parts if x)
 
     # -- 계획 -----------------------------------------------------------------
     def _plans(self, ctx: ToolContext) -> str:
@@ -1151,12 +1354,19 @@ class FlightsPlugin(Plugin):
         self._check_one(ctx, row)
 
     def _check_one(self, ctx: ToolContext, row: dict) -> None:
-        """지켜보던 노선 하나를 다시 보고, 말할 만하면 알린다."""
+        """지켜보던 노선 하나를 다시 보고, 말할 만하면 알린다.
+
+        ★사용자가 말한 조건 그대로 다시 본다★(Sean 요구 2026-08-19) 왕복으로 보던
+        것을 편도로 다시 보거나 대한항공만 보던 것을 아무 항공사로 다시 보면, 그
+        값으로 *"내렸어요"* 라고 말하는 것은 **거짓말**이다.
+        """
         brain = ctx.brain
         uid = str(getattr(ctx, "user_id", "") or "local")
+        trip = row.get("trip") or Trip(origin=row["origin"],
+                                       destination=row["destination"],
+                                       depart=row["depart"])
         try:
-            fresh = rank(self._find(ctx, row["origin"], row["destination"],
-                                    {"depart": row["depart"]}))
+            fresh = rank(self._find(ctx, trip)[0])
         except Exception:
             return
         best = cheapest(fresh)
@@ -1178,8 +1388,8 @@ class FlightsPlugin(Plugin):
 
         # ★새 값을 기억에 남긴다★ 안 남기면 다음번에 **같은 인하를 또** 알린다
         try:
-            remember_search(brain, uid, row["origin"], row["destination"], fresh,
-                            depart=row["depart"], agent=self)
+            remember_search(brain, uid, trip.origin, trip.destination, fresh,
+                            trip=trip, agent=self)
         except Exception:
             pass
         ctx.notice(
@@ -1194,10 +1404,13 @@ class FlightsPlugin(Plugin):
                           price=money(best.price, best.currency),
                           airline=best.airline or i18n.t("the airline"),
                           stops=stops_text(best.stops)),
+            # ★단추도 **같은 조건**을 들고 간다★ 조건을 빼고 다시 열면 사용자는
+            # 방금 들은 것과 다른 목록을 보게 되고, 그 순간 알림이 거짓이 된다.
             action={"label": i18n.t("Show me"), "tool": self.name,
-                    "args": {"origin": row["origin"],
-                             "destination": row["destination"],
-                             "depart": row["depart"]}})
+                    "args": {"origin": trip.origin,
+                             "destination": trip.destination,
+                             "depart": trip.depart, "return_on": trip.return_on,
+                             "airline": trip.airline, "nonstop": trip.nonstop}})
         self._raised.add(self._notice_key(row["route"]))
         remember_check(brain, uid, row["wish_id"], alerted=True)
 
@@ -1293,14 +1506,26 @@ class FlightsPlugin(Plugin):
 
         어디서 어디로 가는지는 후보들이 이미 알고 있다 — 그중 하나에서 읽는다.
         모르면 열쇠를 그대로 쓴다(빈 줄보다는 영어 한 줄이 낫다).
+
+        ★조건도 여기 보인다★(Sean 요구 2026-08-19) *"대한항공 직항만"* 으로 본
+        목록인지 아닌지가 안 보이면, 사용자는 값이 왜 이렇게 비싼지 모른 채
+        **우리가 잘못 찾았다고 읽는다**. 걸린 조건은 화면이 말해야 한다.
         """
         first = next((i for i in (state.get("items") or []) if isinstance(i, dict)), {})
         start, end = _place(first.get("origin", "")), _place(first.get("destination", ""))
-        day = _date(state.get("depart", ""))
+        day, back = _date(state.get("depart", "")), _date(state.get("return_on", ""))
         if not end:
             return str(state.get("route", ""))
-        where = f"{start} → {end}" if start else end
-        return f"{where} · {day}" if day else where
+        # ★왕복은 화살표가 양쪽이다★ 글자로 "왕복"이라 쓰는 것보다 빠르게 읽힌다
+        where = (f"{start} ⇄ {end}" if back else f"{start} → {end}") if start else end
+        parts = [where]
+        if day:
+            parts.append(f"{day} ⇄ {back}" if back else day)
+        if airline := _place(str(state.get("airline") or "")):
+            parts.append(airline)
+        if state.get("nonstop"):
+            parts.append(i18n.t("Nonstop"))
+        return " · ".join(parts)
 
     def _card(self, item: dict, position: int, *, lead: bool = False,
               low: bool = False, with_day: bool = True) -> dict:
@@ -1316,7 +1541,10 @@ class FlightsPlugin(Plugin):
         note = item.get("note", "") or ""
         # ★미는 카드는 **왜 미는지**를 먼저 말한다★
         reason = str(item.get("reason") or "") if lead else ""
-        line = " · ".join(x for x in (reason, depart, note) if x)
+        # ★값이 무엇을 덮는지 **먼저** 말한다★ 왕복으로 찾았는데 편도 값이 떠 있으면
+        # 사용자는 예산을 절반으로 잘못 잡는다 — 돈에 관한 것은 앞에 온다.
+        covers = fare_type_text(str(item.get("fare_type") or ""))
+        line = " · ".join(x for x in (covers, reason, depart, note) if x)
         return {"title": item.get("airline", "") or i18n.t("the airline"),
                 # ★어디에서 어디로★ 판매처 자리에 노선을 쓴다 — 물건을 견줄 때
                 # 판매처가 하는 일을, 표를 견줄 때는 노선이 한다
@@ -1362,7 +1590,7 @@ class FlightsPlugin(Plugin):
 
     # -- 화면이 읽을 것을 남긴다 ----------------------------------------------
     def _remember_view(self, ctx: ToolContext, route: str, flights: list[Flight],
-                       past: dict, diff: dict, depart: str) -> None:
+                       past: dict, diff: dict, trip: Trip) -> None:
         """★도구와 화면이 **같은 것**을 본다★ 화면이 다시 검색하면 두 번 돈다."""
         # ★값 흐름은 **브레인에서** 온다★ 화면 상태에만 두면 다른 노선을 한 번
         # 찾아보는 순간 이력이 통째로 사라지고, 선은 영영 두 점을 못 넘는다.
@@ -1376,11 +1604,14 @@ class FlightsPlugin(Plugin):
             _save(ctx, {
                 # ★새 검색은 **첫 쪽부터**★ 3쪽을 보던 중에 다른 노선을 찾으면,
                 # 쪽수가 남아 있어 새 목록의 9번째부터 보인다(고장으로 읽힌다).
-                "route": route, "depart": _date(depart), "diff": diff,
+                "route": route, "depart": trip.depart,
+                "return_on": trip.return_on, "airline": trip.airline,
+                "nonstop": bool(trip.nonstop), "diff": diff,
                 "history": history, "page": 0,
                 "items": [{"airline": f.airline, "origin": f.origin,
                            "destination": f.destination, "depart": f.depart,
                            "stops": f.stops, "minutes": f.minutes,
+                           "fare_type": f.fare_type,
                            "price": f.price, "currency": f.currency,
                            "note": f.note, "seen_at": f.seen_at, "url": f.url,
                            # ★미는 이유를 **그 줄에** 적는다★ 이유 없는 순위는
@@ -1406,12 +1637,13 @@ class FlightsPlugin(Plugin):
         return "\n".join(lines)
 
     # -- 브레인 ---------------------------------------------------------------
-    def _remember(self, ctx: ToolContext, origin: str, destination: str,
-                  flights: list[Flight], depart: str) -> None:
+    def _remember(self, ctx: ToolContext, trip: Trip,
+                  flights: list[Flight]) -> None:
         """★기억은 부산물이다★ 실패해도 사용자는 검색 결과를 받는다."""
         try:
             remember_search(ctx.brain, str(getattr(ctx, "user_id", "") or "local"),
-                            origin, destination, flights, depart=depart, agent=self)
+                            trip.origin, trip.destination, flights,
+                            trip=trip, agent=self)
         except Exception as e:
             ctx.write_log(f"[flights] could not remember: {e}")
 

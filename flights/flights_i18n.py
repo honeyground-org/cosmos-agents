@@ -28,6 +28,16 @@ LANGUAGES = ("ko", "ja", "de", "es", "fr")
 
 TRANSLATIONS: dict[str, dict[str, str]] = {
     "ko": {
+        "Round trip": "왕복",
+        "One way": "편도",
+        "return": "왕복",
+        "nonstop": "직항",
+        "I found {count} flights, but none on {airline}.":
+            "항공편 {count}개를 찾았는데 {airline} 편은 없었어요.",
+        "I found {count} flights, but none of them are nonstop.":
+            "항공편 {count}개를 찾았는데 직항은 없었어요.",
+        "I found {count} flights, but none of them are nonstop on {airline}. Shall I drop one of those?":
+            "항공편 {count}개를 찾았는데 {airline} 직항은 없었어요. 조건 하나를 뺄까요?",
         "Best now: {what}, {stops}.": "지금 제일 나은 건 {what}, {stops}.",
         "Best pick": "추천",
         "Cheapest": "최저가",
@@ -90,6 +100,16 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
             "{route} 이(가) 보셨을 때보다 {amount} 싸졌어요.",
     },
     "ja": {
+        "Round trip": "往復",
+        "One way": "片道",
+        "return": "往復",
+        "nonstop": "直行",
+        "I found {count} flights, but none on {airline}.":
+            "{count}件見つかりましたが、{airline}の便はありませんでした。",
+        "I found {count} flights, but none of them are nonstop.":
+            "{count}件見つかりましたが、直行便はありませんでした。",
+        "I found {count} flights, but none of them are nonstop on {airline}. Shall I drop one of those?":
+            "{count}件見つかりましたが、{airline}の直行便はありませんでした。条件を一つ外しますか。",
         "Best now: {what}, {stops}.": "今のいちばんは {what}、{stops}。",
         "Best pick": "おすすめ",
         "Cheapest": "最安",
@@ -152,6 +172,16 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
             "{route} がご覧になった時より {amount} 安くなりました。",
     },
     "de": {
+        "Round trip": "Hin und zurück",
+        "One way": "Nur Hinflug",
+        "return": "Rückflug",
+        "nonstop": "nonstop",
+        "I found {count} flights, but none on {airline}.":
+            "Ich habe {count} Flüge gefunden, aber keinen mit {airline}.",
+        "I found {count} flights, but none of them are nonstop.":
+            "Ich habe {count} Flüge gefunden, aber keinen ohne Zwischenstopp.",
+        "I found {count} flights, but none of them are nonstop on {airline}. Shall I drop one of those?":
+            "Ich habe {count} Flüge gefunden, aber keinen Nonstop-Flug mit {airline}. Soll ich eine der Bedingungen weglassen?",
         "Best now: {what}, {stops}.": "Am besten jetzt: {what}, {stops}.",
         "Best pick": "Beste Wahl",
         "Cheapest": "Günstigste",
@@ -224,6 +254,16 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
             "{route} ist {amount} günstiger als beim letzten Blick.",
     },
     "es": {
+        "Round trip": "Ida y vuelta",
+        "One way": "Solo ida",
+        "return": "vuelta",
+        "nonstop": "sin escalas",
+        "I found {count} flights, but none on {airline}.":
+            "He encontrado {count} vuelos, pero ninguno de {airline}.",
+        "I found {count} flights, but none of them are nonstop.":
+            "He encontrado {count} vuelos, pero ninguno sin escalas.",
+        "I found {count} flights, but none of them are nonstop on {airline}. Shall I drop one of those?":
+            "He encontrado {count} vuelos, pero ninguno sin escalas de {airline}. ¿Quito una de esas condiciones?",
         "Best now: {what}, {stops}.": "Lo mejor ahora: {what}, {stops}.",
         "Best pick": "Mejor opción",
         "Cheapest": "Más barato",
@@ -295,6 +335,16 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
             "{route} está {amount} más barato que cuando lo miraste.",
     },
     "fr": {
+        "Round trip": "Aller-retour",
+        "One way": "Aller simple",
+        "return": "retour",
+        "nonstop": "sans escale",
+        "I found {count} flights, but none on {airline}.":
+            "J'ai trouvé {count} vols, mais aucun avec {airline}.",
+        "I found {count} flights, but none of them are nonstop.":
+            "J'ai trouvé {count} vols, mais aucun sans escale.",
+        "I found {count} flights, but none of them are nonstop on {airline}. Shall I drop one of those?":
+            "J'ai trouvé {count} vols, mais aucun sans escale avec {airline}. Dois-je lever une de ces conditions ?",
         "Best now: {what}, {stops}.": "Le meilleur maintenant : {what}, {stops}.",
         "Best pick": "Meilleur choix",
         "Cheapest": "Le moins cher",

@@ -894,3 +894,265 @@ def test_the_agent_says_why_it_was_installed():
     """★`purpose`가 있어야 무엇을 남길지가 정해진다★(원칙 0 ①)"""
     assert len(FlightsPlugin.purpose.split()) > 20
     assert FlightsPlugin.purpose != FlightsPlugin.summary
+
+
+# ══ ★조건을 받는다 — 항공사 · 왕복 · 직항★ (Sean 요구 2026-08-19) ═════════════
+#
+# > *"원하는 항공사와 날짜를 전달하면, 그 외 조건 왕복 여부 등을 전달하면 그에 맞는
+# >  항공권을 보여주면 좋음"*
+#
+# ⚠️ 착수 전 실측: `return_on`이 **선언만 되고 아무도 안 쓰고 있었다** — 검색어에도,
+# 거르는 자리에도, 기억에도 없었다(함정 74: 표에 있는데 아무도 안 채우면, 다음
+# 사람은 있는 줄 알고 배선했다가 영영 빈 값을 받는다).
+
+def test_the_conditions_come_in_as_one_piece():
+    """★흩어 두면 가는 자리마다 하나씩 빠진다★ — 실제로 `return_on`이 그랬다."""
+    trip = core.trip_of({"origin": "ICN", "destination": "Tokyo",
+                         "depart": "2026-09-10", "return_on": "2026-09-14",
+                         "airline": "Korean Air", "nonstop": True})
+    assert trip.round_trip and trip.airline == "Korean Air" and trip.nonstop
+    # ★못 읽는 날짜는 **없는 것**이다★ 반쯤 읽어 끼우면 같은 여행이 두 이름이 된다
+    assert core.trip_of({"depart": "next week"}).depart == ""
+
+
+def test_the_model_saying_false_does_not_mean_nonstop_only():
+    """★모델은 `true`를 문자열로도 준다★ — 그리고 `"false"`는 파이썬에서 참이다.
+    그대로 읽으면 직항을 원한 적 없는 사람에게 직항만 남는다."""
+    assert core.trip_of({"nonstop": "true"}).nonstop
+    assert not core.trip_of({"nonstop": "false"}).nonstop
+    assert not core.trip_of({"nonstop": ""}).nonstop
+
+
+def test_a_round_trip_is_a_different_trip_from_the_one_way():
+    """★왕복은 편도와 값이 다른 별개의 물건이다★ 열쇠에서 빼면 어제 본 왕복 값과
+    오늘 본 편도 값을 빼서 **있지도 않은 인하**를 말한다."""
+    one_way = core.route_name("ICN", "Tokyo", "2026-09-10")
+    round_trip = core.route_name("ICN", "Tokyo", "2026-09-10", return_on="2026-09-14")
+    assert one_way != round_trip and "returning 2026-09-14" in round_trip
+
+
+def test_the_airline_and_nonstop_are_part_of_the_key_too():
+    """*"대한항공으로"* 는 **지켜볼 대상 자체**를 바꾼다."""
+    plain = core.route_name("ICN", "Tokyo", "2026-09-10")
+    picky = core.route_name("ICN", "Tokyo", "2026-09-10",
+                            airline="Korean Air", nonstop=True)
+    assert plain != picky
+    assert "Korean Air" in picky and "nonstop" in picky
+    # ★차례가 정해져 있다★ 순서가 흔들리면 같은 조건이 두 이름이 되어 두 곳에 쌓인다
+    assert core.route_name("ICN", "Tokyo", "2026-09-10",
+                           airline="Korean Air", nonstop=True) == picky
+
+
+def test_the_airline_is_matched_loosely():
+    """★결과는 'Korean Air'·'대한항공'·'KE'로 제각각 온다★ 딱 맞는 것만 남기면
+    사용자는 *"대한항공으로"* 라고 말하고 **빈 화면**을 받는다."""
+    ke = core.to_flights(json.dumps([_row("Korean Air", 380_000)]))[0]
+    assert core.matches_trip(ke, core.Trip(airline="korean"))
+    assert core.matches_trip(ke, core.Trip(airline="Korean Air"))
+    assert not core.matches_trip(ke, core.Trip(airline="Peach"))
+    # 항공사를 안 말했으면 전부 통과한다
+    assert core.matches_trip(ke, core.Trip())
+
+
+def test_nonstop_only_means_nonstop_only():
+    direct, hop = core.to_flights(json.dumps([
+        _row("Peach", 210_000, stops=0), _row("Scoot", 168_000, stops=2)]))
+    assert core.matches_trip(direct, core.Trip(nonstop=True))
+    assert not core.matches_trip(hop, core.Trip(nonstop=True))
+
+
+def test_the_search_query_carries_every_condition(tmp_path):
+    """★조건을 검색어에 넣는 것과 거르는 것은 다른 일이다★ 넣으면 맞는 것이 더 많이
+    올라오고, 거르는 것은 그래도 섞여 온 것을 쳐낸다 — 둘 다 해야 한다."""
+    ctx = _Ctx(home=tmp_path)
+    FlightsPlugin().run(ctx, action="search", origin="ICN", destination="Tokyo",
+                        depart="2026-09-10", return_on="2026-09-14",
+                        airline="Korean Air", nonstop=True)
+    query = ctx.tool_calls[0][1]["query"]
+    for piece in ("ICN", "Tokyo", "2026-09-10", "2026-09-14", "Korean Air"):
+        assert piece in query, f"검색어에 {piece!r}가 없습니다: {query}"
+
+
+def test_flights_that_do_not_match_the_conditions_are_dropped(tmp_path):
+    """★거르는 것은 **우리 코드**가 한다★ 검색어에 넣는 것만으로는 안 걸린다."""
+    brain = LiteMemoryProvider(tmp_path / "brain")
+    mixed = json.dumps([_row("Peach", 168_000, stops=1),
+                        _row("Korean Air", 380_000, stops=0),
+                        _row("Asiana", 372_000, stops=0)])
+    ctx = _Ctx(brain=brain, home=tmp_path, extract=mixed)
+    answer = FlightsPlugin().run(ctx, action="search", origin="ICN",
+                                 destination="Tokyo", airline="Korean Air")
+    assert "Korean Air" in answer
+    assert "Peach" not in answer and "Asiana" not in answer
+
+
+def test_nothing_matching_says_which_condition_is_the_problem(tmp_path):
+    """★못 찾았으면 **왜** 못 찾았는지까지 말한다★ 그냥 *"못 찾았어요"* 라고 하면
+    사용자는 노선이나 날짜를 의심하고, 정작 풀 수 있는 조건은 손대지 않는다."""
+    brain = LiteMemoryProvider(tmp_path / "brain")
+    rows = json.dumps([_row("Peach", 168_000, stops=1),
+                       _row("Scoot", 150_000, stops=2)])
+    ctx = _Ctx(brain=brain, home=tmp_path, extract=rows)
+    answer = FlightsPlugin().run(ctx, action="search", origin="ICN",
+                                 destination="Tokyo", nonstop=True)
+    assert "nonstop" in answer and "2" in answer, answer
+
+    answer = FlightsPlugin().run(ctx, action="search", origin="ICN",
+                                 destination="Tokyo", airline="Korean Air")
+    assert "Korean Air" in answer and "none on" in answer, answer
+
+
+def test_the_conditions_are_remembered_so_the_background_looks_at_the_same_thing(tmp_path):
+    """★왕복으로 보던 것을 편도로 다시 보고 "내렸어요"라고 하면 거짓말이다★"""
+    brain = LiteMemoryProvider(tmp_path / "brain")
+    plugin = FlightsPlugin()
+    ctx = _Ctx(brain=brain, home=tmp_path,
+               extract=json.dumps([_row("Korean Air", 890_000, stops=0)]))
+    plugin.run(ctx, action="search", origin="ICN", destination="Tokyo",
+               depart="2026-09-10", return_on="2026-09-14",
+               airline="Korean Air", nonstop=True)
+
+    row = core.watchlist(brain, "u1")[0]
+    trip = row["trip"]
+    assert trip.return_on == "2026-09-14" and trip.airline == "Korean Air"
+    assert trip.nonstop is True
+
+    # 배경 재점검이 **같은 조건**으로 웹에 묻는다
+    ctx.tool_calls.clear()
+    plugin.advise(ctx)
+    query = ctx.tool_calls[0][1]["query"]
+    for piece in ("2026-09-14", "Korean Air"):
+        assert piece in query, f"배경 재점검이 조건을 잃었습니다: {query}"
+
+
+def test_the_alert_button_reopens_the_same_conditions(tmp_path):
+    """★조건을 빼고 다시 열면 방금 들은 것과 다른 목록이 뜬다★ — 그 순간 알림이
+    거짓이 된다."""
+    brain = LiteMemoryProvider(tmp_path / "brain")
+    plugin = FlightsPlugin()
+    core.remember_search(brain, "u1", "ICN", "Tokyo",
+                         _flights(_row("Korean Air", 890_000, stops=0)),
+                         trip=core.Trip(origin="ICN", destination="Tokyo",
+                                        depart="2026-09-10", return_on="2026-09-14",
+                                        airline="Korean Air", nonstop=True))
+    ctx = _Ctx(brain=brain, home=tmp_path,
+               extract=json.dumps([_row("Korean Air", 690_000, stops=0)]))
+    plugin.advise(ctx)
+    assert ctx.notices, "★측정 무효★ 알림 자체가 안 떴습니다"
+    args = next(iter(ctx.notices.values()))["action"]["args"]
+    assert args["return_on"] == "2026-09-14" and args["airline"] == "Korean Air"
+    assert args["nonstop"] is True
+
+
+def test_a_one_way_search_does_not_overwrite_the_round_trip(tmp_path):
+    """★열쇠가 갈리지 않으면 두 여행이 한 곳에 쌓인다★"""
+    brain = LiteMemoryProvider(tmp_path / "brain")
+    both = core.Trip(origin="ICN", destination="Tokyo", depart="2026-09-10",
+                     return_on="2026-09-14")
+    one = core.Trip(origin="ICN", destination="Tokyo", depart="2026-09-10")
+    core.remember_search(brain, "u1", "ICN", "Tokyo",
+                         _flights(_row("Korean Air", 890_000)), trip=both)
+    core.remember_search(brain, "u1", "ICN", "Tokyo",
+                         _flights(_row("Peach", 210_000)), trip=one)
+    assert core.recall_route(brain, "u1", trip=both)["price"] == 890_000
+    assert core.recall_route(brain, "u1", trip=one)["price"] == 210_000
+    assert len(brain.find_entities("u1", kind="wish")) == 2
+
+
+def test_the_declared_parameters_are_all_actually_used():
+    """★표에 있는데 아무도 안 채우면, 다음 사람은 있는 줄 알고 배선했다가 영영 빈
+    값을 받는다★(함정 74) — `return_on`이 정확히 그 상태였다.
+
+    선언한 칸이 **조건 덩어리에 실제로 실리는지**를 묻는다.
+    """
+    declared = set(FlightsPlugin.parameters["properties"]) - {"action"}
+    trip = core.trip_of({k: "x" for k in declared})
+    carried = {"origin": trip.origin, "destination": trip.destination,
+               "depart": trip.depart, "return_on": trip.return_on,
+               "airline": trip.airline, "nonstop": trip.nonstop}
+    assert declared <= set(carried), \
+        f"선언만 되고 아무 데도 안 실리는 칸: {sorted(declared - set(carried))}"
+
+
+def test_the_screen_shows_which_conditions_are_on(tmp_path):
+    """★걸린 조건이 안 보이면 값이 왜 이런지 모른 채 우리가 잘못 찾았다고 읽는다★"""
+    brain = LiteMemoryProvider(tmp_path / "brain")
+    plugin = FlightsPlugin()
+    ctx = _Ctx(brain=brain, home=tmp_path,
+               extract=json.dumps([_row("Korean Air", 890_000, stops=0)]))
+    plugin.run(ctx, action="search", origin="ICN", destination="Tokyo",
+               depart="2026-09-10", return_on="2026-09-14",
+               airline="Korean Air", nonstop=True)
+    group = next(b for b in _screen(plugin, ctx)["blocks"] if b["type"] == "group")
+    label = group["label"]
+    for piece in ("ICN", "Tokyo", "2026-09-10", "2026-09-14", "Korean Air"):
+        assert piece in label, f"화면 머리에 {piece!r}가 없습니다: {label}"
+    assert "⇄" in label, "왕복인지 편도인지 한눈에 안 보입니다"
+
+
+def test_the_screen_says_what_the_price_covers(tmp_path):
+    """★돈에 관한 것은 지어내지 않는다★ 왕복으로 찾았는데 편도 값이 떠 있으면
+    사용자는 예산을 절반으로 잘못 잡는다 — 그리고 그 잘못은 조용하다."""
+    brain = LiteMemoryProvider(tmp_path / "brain")
+    plugin = FlightsPlugin()
+    ctx = _Ctx(brain=brain, home=tmp_path, extract=json.dumps([
+        dict(_row("Korean Air", 890_000, stops=0), fare_type="round_trip"),
+        dict(_row("Asiana", 372_000, stops=0), fare_type="one_way")]))
+    # ⚠️ 왕복으로 물으면 편도 값은 **걸러진다**(아래 검사가 그것을 지킨다) —
+    # 여기서 보려는 것은 *"값이 무엇을 덮는지 화면이 말하는가"* 라 편도로 묻는다
+    plugin.run(ctx, action="search", origin="ICN", destination="Tokyo")
+    compare = next(b for b in _screen(plugin, ctx)["blocks"] if b["type"] == "compare")
+    notes = " ".join(i["note"] for i in compare["items"])
+    assert "Round trip" in notes and "One way" in notes, notes
+
+
+def test_a_fare_type_we_do_not_know_says_nothing(tmp_path):
+    """★모르면 **모른다**★ 모델이 지어낸 낱말이 화면에 그대로 뜨면 정보가 아니라
+    오류로 읽힌다. 그리고 빈칸은 여기서 *"안 적혀 있었다"* 라는 뜻이다."""
+    assert core.fare_type_text("") == ""
+    assert core.fare_type_text("weekend_special") == ""
+    assert core.to_flights(json.dumps([_row("X", 1, fare_type="weekend_special")]))[0] \
+        .fare_type == ""
+    # 모델이 쓰는 여러 모양은 받아 준다 — 뜻이 같은 것을 모른다고 하면 그것도 손해다
+    for shape in ("round trip", "Round-Trip", "ROUND_TRIP"):
+        assert core.to_flights(json.dumps([_row("X", 1, fare_type=shape)]))[0] \
+            .fare_type == "round_trip"
+
+
+def test_a_round_trip_search_does_not_recommend_a_one_way_fare():
+    """★찍어 보고 알았다★ (2026-08-19) 첫 그림에서 *"추천"* 이 **189,000 편도**에
+    붙어 있었다 — 사용자는 왕복을 물었고, 같은 화면에 **212,000 왕복**이 있었는데도.
+    편도를 왕복으로 치면 대략 378,000이니 그 추천은 정반대였다.
+
+    ★값이 덮는 범위가 다르면 견줄 수 없다★(통화가 다르면 안 빼는 것과 같은 이유).
+    """
+    one_way, both, unknown = core.to_flights(json.dumps([
+        dict(_row("Peach", 189_000, stops=0), fare_type="one_way"),
+        dict(_row("Jeju Air", 212_000, stops=0), fare_type="round_trip"),
+        _row("Asiana", 372_000, stops=0)]))
+    wants_both = core.Trip(return_on="2026-09-14")
+    assert not core.matches_trip(one_way, wants_both)
+    assert core.matches_trip(both, wants_both)
+    # ★모르는 것은 안 버린다★ 안 적힌 경우가 흔해서, 버리면 왕복 검색은 늘 빈손이다
+    assert core.matches_trip(unknown, wants_both)
+
+    # ★비대칭이 정당하다★ 편도를 찾을 때 왕복 값은 참고가 되고, 카드가 그렇게 말한다
+    one_way_search = core.Trip()
+    assert core.matches_trip(both, one_way_search)
+    assert core.matches_trip(one_way, one_way_search)
+
+
+def test_the_round_trip_screen_pushes_the_round_trip_fare(tmp_path):
+    """★배선까지 잰다★ 판정만 고치고 부르는 자리가 안 걸러도 그물은 초록이다."""
+    brain = LiteMemoryProvider(tmp_path / "brain")
+    plugin = FlightsPlugin()
+    ctx = _Ctx(brain=brain, home=tmp_path, extract=json.dumps([
+        dict(_row("Peach", 189_000, stops=0), fare_type="one_way"),
+        dict(_row("Jeju Air", 212_000, stops=0), fare_type="round_trip")]))
+    plugin.run(ctx, action="search", origin="ICN", destination="Tokyo",
+               depart="2026-09-10", return_on="2026-09-14")
+    compare = next(b for b in _screen(plugin, ctx)["blocks"] if b["type"] == "compare")
+    pushed = next(i for i in compare["items"] if i["lead"])
+    assert pushed["title"] == "Jeju Air", \
+        f"왕복을 물었는데 편도 값을 밀고 있습니다: {pushed['title']}"
+    assert "Peach" not in [i["title"] for i in compare["items"]]

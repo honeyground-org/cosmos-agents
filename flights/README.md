@@ -17,6 +17,16 @@ search can tell you something the first one could not.
 - **Four flights side by side on one screen** — price, how many times you change
   planes, how long the whole trip takes, and one sentence on why a flight is
   worth a look. Say *"show the next ones"* for the rest.
+- **Say what you want and it looks for that.** Name an airline, ask for nonstop
+  only, give a return date — the conditions go into the search *and* filter what
+  comes back, and the screen shows which ones are on. When nothing matches it
+  says **which condition is the problem** ("I found 5 flights, but none on
+  Korean Air"), because "nothing found" makes people doubt the route instead of
+  the filter they can actually drop.
+- **It says what the price covers.** Each card marks a fare as one way or
+  return when the results say so, and stays quiet when they do not. A round-trip
+  search never recommends a one-way fare: 189,000 one way is not a better deal
+  than 212,000 return, and putting them side by side implies it is.
 - **The one it pushes is not simply the cheapest.** On a flight the cheapest is
   often the hardest — two stops and thirteen hours. It pushes the cheapest of
   the ones with the fewest stops, and the card says so in words. The cheapest
@@ -107,8 +117,10 @@ and remove any of it with *"stop tracking that route"* or from the brain screen.
   screen as "worth a look", not as a quote.
 - Travel time and stop counts are only as good as what the search results say.
   When the results do not say, the column reads *Unknown* rather than a guess.
-- **One-way pricing.** A return date can be passed to the search, but the
-  comparison is built around the outbound fare.
+- **Return dates go into the search, not into arithmetic.** It never doubles a
+  one-way fare to guess a return price — it filters to fares the results
+  actually describe as returns, and leaves the rest marked "unknown". When the
+  results say nothing about what a price covers, neither does it.
 - Fares in **different currencies are never compared.** If the same route comes
   back in USD when it was last seen in KRW, it says nothing rather than
   subtracting two numbers that do not mean the same thing.
