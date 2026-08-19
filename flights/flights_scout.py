@@ -1057,7 +1057,7 @@ class FlightsPlugin(Plugin):
         "Show the next ones",
         "I booked it",
     )
-    version = "0.3.0"
+    version = "0.3.1"
     author = "cosmos"
     description = ("Searches for flights on a route and compares them with what the "
                    "user saw last time, remembering the routes and destinations they "
@@ -1092,6 +1092,9 @@ class FlightsPlugin(Plugin):
     capabilities = ["network", "memory"]
     requires_desktop = False
     view_title = "Flights"
+    # ★이 화면의 성격★(Sean 요구 2026-08-19) 넷을 나란히 놓고 **값으로** 고르는
+    # 화면이다. 눈이 카드 사이를 오가야 하므로 넉넉해야 한다.
+    character = {"glyph": "route", "density": "airy"}
 
     brain = {
         # ★어디에 언제 가려 하는가는 나중에도 참이다★ 가격은 **관측**(시각과 함께)

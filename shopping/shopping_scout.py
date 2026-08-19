@@ -75,7 +75,7 @@ _EXTRACT = (
 
 class ShoppingPlugin(Plugin):
     name = "shopping"
-    version = "0.1.0"
+    version = "1.1.2"
     author = "cosmos"
     # 🛒 마켓에 실린다(A1). `view_title`은 **화면 제목**이고 이쪽은 **마켓 이름**이다.
     title = "Shopping scout"
@@ -149,6 +149,9 @@ class ShoppingPlugin(Plugin):
     capabilities = ["network", "memory", "shopping.search"]
     requires_desktop = False
     view_title = "Shopping"
+    # ★이 화면의 성격★(Sean 요구 2026-08-19) 후보를 나란히 놓고 **값과 신호로**
+    # 고르는 화면이다 — 사진이 있어 더 넉넉해야 한다.
+    character = {"glyph": "compare", "density": "airy"}
 
     # -- 도구 -----------------------------------------------------------------
     brain = {

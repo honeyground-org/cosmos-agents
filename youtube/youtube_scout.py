@@ -683,7 +683,7 @@ class YouTubePlugin(Plugin):
         "What is this video about?",
         "Upload that clip to my channel as unlisted",
     )
-    version = "0.2.0"
+    version = "0.2.1"
     author = "cosmos"
     description = ("Searches YouTube, describes or summarizes a video, lists what is "
                    "trending, opens a video in the browser, and uploads a video file "
@@ -716,6 +716,9 @@ class YouTubePlugin(Plugin):
     requires_desktop = False
     # ★화면 이름★ — 마켓 카드의 `title`과 다른 자리다(이쪽은 열었을 때의 제목)
     view_title = "My channel"
+    # ★이 화면의 성격★(Sean 요구 2026-08-19) 쌓아 온 것을 **시간순으로** 보는
+    # 화면이다. 한 눈에 들어와야 *"얼마나 해 왔나"* 가 보이므로 촘촘하다.
+    character = {"glyph": "channel", "density": "dense"}
 
     # ★열쇠는 금고로 직행한다★ 파일에 남기면 그 순간 저장소에 커밋되고, 화면으로
     # 내려보내면 응답·기록·스크린샷에 실린다. 돌아오는 것은 마스킹뿐이다.
