@@ -85,3 +85,20 @@ def test_the_install_screen_says_what_it_will_remember():
     assert YouTubePlugin.brain["stores"] and YouTubePlugin.brain["reads"]
     assert YouTubePlugin.brain.get("settled"), \
         "안 남기기로 한 것도 적어야 한다 — 뭉개면 고칠 것이 '검토됨'으로 묻힌다"
+
+
+def test_choosing_not_to_speak_first_is_written_down():
+    """★"검토했고 **안 하기로** 했다"는 **닫힌 것**이다★ (Sean 결정 2026-08-19)
+
+    비워 두면 *"아직 안 봤다"* 와 구별되지 않아, 다음 사람이 **이미 정한 것을 다시
+    정한다**(`brain`의 `gap`/`settled`를 가른 것과 정확히 같은 이유).
+
+    ⚠️ 그리고 ★근거가 있어야 한다★ — `settled`가 빈 문자열이면 그것은 결정이 아니라
+    빈칸이다.
+    """
+    assert not YouTubePlugin.makes_offers and not YouTubePlugin.raises_notices, \
+        "먼저 안 걸기로 해 놓고 훅을 켜 두었습니다"
+    why = str((getattr(YouTubePlugin, "collab", None) or {}).get("settled") or "")
+    assert len(why.split()) > 20, f"안 하기로 한 근거가 없습니다: {why!r}"
+    # ★선언은 영어다★ 마켓은 남이 만든 것을 받는 곳이다
+    assert not any("가" <= ch <= "힣" for ch in why), "선언 문구가 한국어입니다"

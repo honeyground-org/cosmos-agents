@@ -664,6 +664,20 @@ class YouTubePlugin(Plugin):
 
     # ★원하는 사람만 들인다★ — ② 구글 OAuth가 있어야 올릴 수 있다
     optional = True
+
+    # ★먼저 말을 걸지 **않는다** — 그리고 그것이 결정이다★ (Sean 2026-08-19)
+    #
+    # 이 칸이 비어 있으면 *"아직 안 봤다"* 와 구별되지 않아, 다음 사람이 **이미 정한
+    # 것을 다시 정하게** 된다(`brain`의 `gap`/`settled`를 가른 것과 같은 이유).
+    collab = {
+        "settled": "Telling someone who publishes that it has been 27 days since "
+                   "their last upload is the fastest way to become nagging, and it "
+                   "is a judgement about their productivity that we have no standing "
+                   "to make: we cannot tell a break from a block from a holiday. "
+                   "The useful moment is the one they open themselves -- when they "
+                   "publish, it hands back the titles and tags they used before. "
+                   "That costs them nothing and needs no guess about their state.",
+    }
     # ★말로 이렇게 시킨다★ — 사용자가 이 카드에서 읽는 사용법이다
     howto = (
         "What is this video about?",
