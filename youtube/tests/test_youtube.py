@@ -787,3 +787,19 @@ def test_the_screen_never_shows_numbers_we_refused_to_store(tmp_path):
     text = json.dumps(YouTubePlugin().view(_Ctx(tmp_path, brain=brain))["blocks"],
                       ensure_ascii=False)
     assert "987654" not in text and "987,654" not in text
+
+
+def test_it_can_stand_in_a_window_of_its_own_and_the_user_decides():
+    """★곁에 두고 보는 화면이다★ (Sean 요구 2026-08-20)
+
+    올리고 나서 며칠에 한 번 들여다보는 화면이라, 코스모스를 덮고 있을 이유가 없다.
+    ⚠️ 그렇다고 창을 **강요하지 않는다** — 둘 다 선언하므로 설정에서 사용자가 고르고,
+    아무것도 안 고르면 지금까지처럼 화면 안이다(옛 사용자의 화면이 안 바뀐다).
+    """
+    from cosmos.contracts import view as view_contract
+    plugin = YouTubePlugin()
+    allowed = view_contract.spaces_of(plugin)
+    assert "window" in allowed, "자기 창을 못 엽니다"
+    assert view_contract.chosen_space(plugin, "") == "screen", \
+        "아무것도 안 골랐는데 창으로 갑니다 — 쓰던 사람의 화면이 바뀝니다"
+    assert view_contract.chosen_space(plugin, "window") == "window"
