@@ -6,7 +6,7 @@
 # fall back to English when one is missing.
 id: honeyground-org/flights
 type: feature
-version: 0.3.1
+version: 0.4.0
 contract: plugin/v1
 title: Flight finder
 # ★설치 화면은 코드를 받기 **전에** 그려진다★ — 그래서 무엇을 기억하는지가 여기
@@ -38,4 +38,10 @@ tools:
 capabilities:
   - network
   - memory
+  # ★항공편 목록을 **직접 연다**★ (2026-08-21) 검색 요약에는 그 날짜의 값도 편명도
+  # 시각도 없어서, 그것으로 표를 만들면 없는 값을 지어내게 된다. `browser.act`는
+  # 날짜 표 하나 때문이다 — 그 표는 주소로 안 열리고 눌러야 열린다. 없으면 항공편
+  # 검색은 그대로 돌고 '더 싼 날' 비교만 빠진다.
+  - browser
+  - browser.act
 requires_desktop: false

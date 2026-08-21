@@ -1,13 +1,29 @@
 """flights — 항공권을 찾고, ★어디에 가려 했는지 기억한다★ (Phase MA ⑥ · Phase AG ①-2d).
 
-## clean-room
+## ★어디서 값을 얻나 — 항공편 목록을 **직접 연다**★ (Sean 지적 2026-08-21)
 
-업스트림에도 항공권 검색이 있으나 코드는 열지 않았다. 그쪽은 구글 플라이트를
-**스크래핑**한다 — 그 방식은 페이지가 바뀌면 조용히 부서지고, 부서졌는지도 모른다.
+> *"아예 항공권 검색을 제대로 하지도 못하고 … 여러 곳에 검색을 하고 항공사에도
+> 검색을 하고 날짜도 바꿔 보고 가격을 비교해 본다. 이것을 에이전트가 해야 하는
+> 것이다. 그런데 그 본질을 하지 못한다."*
 
-★우리는 쇼핑이 이미 낸 길을 그대로 간다★(G16 · 원칙 1): `web_search`로 찾고, 모델은
-**정규형으로 옮기기만** 하고, 순위·비교 같은 **판정은 우리 코드가** 한다. 판정을
-모델에게 맡기면 매번 기준이 달라지고 그 기준을 아무도 설명할 수 없다.
+★맞는 지적이었고, 원인은 **검색 결과로 항공권을 사려 한 것**이었다.★ 첫 판은
+쇼핑이 낸 길을 그대로 따라 `web_search` 한 줄을 던졌는데, 실측해 보니(2026-08-21):
+
+    물음  "Seoul to Tokyo 2026-09-15 flight ticket price"   ← 한 번, 이것이 전부였다
+    답    스카이스캐너·트립닷컴·익스피디아의 **노선 안내 페이지** 링크 다섯
+
+거기 적힌 `$44`·`$41`은 ★그 날짜의 값이 아니라 **아무 날이나 통틀어 가장 싼
+광고 문구**★다. 편명도 시각도 경유도 없다. 그런데 우리는 그것을 *"9월 15일 서울→
+도쿄"* 라고 모델에게 넘겨 표로 만들게 했다 — ★없는 값을 지어내는 구조★였다.
+
+지금은 **항공편 목록 페이지를 브라우저로 연다**(`ctx.read_page` — 코어의 계약).
+같은 물음에 항공편 46개가 나온다: 편마다 출발·도착 시각, 소요, 직항/경유, 항공사,
+그리고 실제 값. ★한 곳을 여는 것이 여러 곳을 검색하는 것보다 넓다★ — 그 페이지가
+이미 대한항공·아시아나·JAL·ANA·저가 항공사를 한자리에 모아 놓았기 때문이다.
+
+⚠️ ★페이지가 바뀌면 부서진다★ — 그것이 이 방식의 값이다. 그래서 **모델이 옮기고**
+(자리가 바뀌어도 글로 읽는다), 순위·비교 같은 **판정은 우리 코드가** 한다. 그리고
+못 읽으면 ★빈손이라고 말한다★ — 지어내지 않는다.
 
 ## ★이 에이전트의 값어치는 두 번째 검색이다★ (원칙 0 · Sean 요구)
 
@@ -80,6 +96,26 @@ DEFAULT_ACTION = "search"
 PAGE_SIZE = 4
 MAX_KEPT = PAGE_SIZE * 3
 
+# ★더 싼 날을 몇 개까지 보이나★ 표에는 앞뒤로 일주일이 있지만, 전부 늘어놓으면
+# 사용자가 고르는 것이 아니라 표를 읽게 된다. 싼 것부터 이만큼만 보인다.
+MAX_NEARBY_DAYS = 3
+
+# ★날짜 표를 읽을 때만 상한을 올린다★ 기본 60은 *"모델이 번호로 고른다"* 를 위한
+# 수인데, 표는 (가는 날 × 오는 날) 격자라 칸이 마흔아홉이고 페이지의 다른 단추까지
+# 세면 그것을 넘는다 — 60에서 끊으면 ★뒤쪽 날짜가 통째로 사라진다★.
+GRID_TARGETS = 400
+
+# ★누른 뒤 표가 그려질 때까지 기다린다★ (2026-08-21 실측으로 정했다)
+#
+# 처음에는 기본 대기(1.2초)로 읽었고 ★한 칸도 못 읽었다★. 그런데 실패로 보이지
+# 않았다 — 읽힌 것 하나가 `"Cheapest from Fetching results ₩272,903"` 이었고,
+# 그것은 **표가 아직 채워지는 중**이라는 뜻이었다. 빈손은 그대로 *"더 싼 날이
+# 없다"* 로 화면에 나갔다.
+#
+# ⚠️ ★이런 종류는 사람 눈에 안 걸린다★ — 화면이 멀쩡하고 말도 맞다. 그래서
+# 계측이 **읽은 칸 수를 센다**(`_other_days`의 기록 한 줄).
+GRID_SETTLE_SEC = 9.0
+
 # 지난 검색이 이보다 오래됐으면 "지난번"이라고 부르지 않는다 — 반 년 전 한 번 본
 # 것을 들이밀면 도움이 아니라 참견이다(쇼핑과 같은 규율).
 STALE_AFTER_DAYS = 90
@@ -119,27 +155,58 @@ ALERT_QUIET_SEC = 3 * 24 * 3600
 RECHECK_EVERY_SEC = 12 * 3600
 
 # 모델에게 주는 지시 — ★옮기는 일만 시킨다★
+#
+# ⚠️ ★읽는 것이 **검색 결과가 아니라 항공편 목록**이 되었다★(2026-08-21) 그래서
+# 물어보는 칸도 달라졌다: 이제 시각과 소요가 페이지에 **실제로 있으므로** 그것을
+# 묻는다. 전에는 없는 것을 물었고, 없는 것을 물으면 모델은 ★지어내서 채운다★.
 _EXTRACT = (
-    "You turn raw web search results about flights into structured rows.\n"
+    "You turn a flight results page into structured rows.\n"
+    "The text comes from a flight search listing: each flight shows its departure "
+    "and arrival time, how long it takes, whether it is nonstop, the airline, and "
+    "the fare.\n"
     "Return ONLY a JSON array. Each item:\n"
-    '{"airline": str, "origin": str, "destination": str, "depart": str (YYYY-MM-DD '
-    'or empty), "stops": int, "duration_minutes": int (total travel time, 0 if the '
-    'results do not say), "price": int (0 if unknown), "currency": "KRW"|"USD"|…,\n'
+    # ★코드셰어가 붙어서 온다★ (2026-08-21 · 찍어 보고 알았다) 목록 페이지는 운항사와
+    # 판매사를 구분자 없이 잇대어 쓴다(`진에어대한항공`). 그대로 옮기니 화면 카드에
+    # ★`Jin AirKorean Air`★ 라는 있지도 않은 항공사가 섰다. 코드로 가르려 했지만
+    # 대문자 경계로 자르면 `JetBlue`가 `Jet Blue`로 쪼개진다 — **파는 쪽이 아니라
+    # 태우는 쪽**을 고르는 판단이라 여기서 시킨다.
+    '{"airline": str (ONE airline -- the one that actually operates the flight; if '
+    'the page runs two names together for a codeshare, keep only the operating one),\n'
+    ' "origin": str (airport code if shown), "destination": str '
+    '(airport code if shown), "depart": str (YYYY-MM-DD or empty),\n'
+    ' "leaves": str (departure clock time exactly as printed, e.g. "7:10 AM" or '
+    '"19:25"), "arrives": str (arrival time, same form),\n'
+    ' "stops": int, "duration_minutes": int (total travel time, 0 if not shown),\n'
+    ' "price": int (digits only, 0 if the page says the price is unavailable), '
+    '"currency": "KRW"|"USD"|…,\n'
     ' "fare_type": "round_trip" | "one_way" | "" (what the price covers -- leave it\n'
-    '   EMPTY unless the results actually say; the user reads this as money),\n'
+    '   EMPTY unless the page actually says; the user reads this as money),\n'
     ' "url": str, "note": str (one short sentence)}\n'
-    "★Never invent a price, a date, a duration or a flight that is not in the "
-    "results. Use 0 or an empty string when unknown -- a guessed number becomes a "
+    "★Never invent a price, a time, a date, a duration or a flight that is not on "
+    "the page. Use 0 or an empty string when unknown -- a guessed number becomes a "
     "fact on the user's screen.★\n"
     f"At most {MAX_KEPT} items."
 )
+
+# ── ★항공편 목록을 여는 주소★ ────────────────────────────────────────────────
+#
+# ★영어로 연다★(`hl=en`) 우리 정규형과 판정이 영어 낱말로 되어 있고, 사람이 읽을
+# 글은 표시할 때 번역한다(CLAUDE.md: 주석은 한국어여도 값은 영어). 페이지 언어를
+# 사용자 언어로 바꾸면 모델이 옮겨야 할 낱말이 매번 달라져 ★옮기기가 언어를 탄다★.
+#
+# ⚠️ ★통화는 다르다 — 그것은 **값**이다★ 사용자가 아는 돈으로 보여야 하므로
+# 설정에서 받는다(`currency`). 이 둘의 경계가 이 저장소의 다국어 규율 그대로다.
+FLIGHTS_URL = "https://www.google.com/travel/flights"
+
+# 날짜 표를 여는 단추의 이름(그 페이지의 접근성 이름). ★표가 어휘를 정한다★
+DATE_GRID_BUTTON = "date grid"
 
 _IATA = re.compile(r"^[A-Z]{3}$")
 _DATE = re.compile(r"^\d{4}-\d{2}-\d{2}")
 
 # 화면이 그리는 신호 중 **우리가 채우는 것**. ★표에 있는데 아무도 안 채우면 그 칸은
 # 영영 "모름"이다★(함정 74) — 그래서 여기 적힌 둘은 `_EXTRACT`가 실제로 물어본다.
-SHOWN_SIGNALS = ("stops", "duration")
+SHOWN_SIGNALS = ("stops", "duration", "when")
 
 # 화면 상태가 사는 파일. ★코드가 아니라 **상태**의 자리다★
 _STATE_FILE = "last_view.json"
@@ -153,6 +220,14 @@ class Flight:
     origin: str = ""
     destination: str = ""
     depart: str = ""
+    # ★그 날의 **몇 시 비행기인가**★ (Sean 지적 2026-08-21 — *"가격과 일정"*)
+    #
+    # 검색 결과로 값을 얻던 시절에는 이 둘을 채울 수가 없었다(광고 문구에는 시각이
+    # 없다). 그래서 화면에는 값만 넷 있고 ★어느 것이 아침이고 어느 것이 밤인지
+    # 알 수 없었다★ — 항공권을 고르는 사람이 값 다음으로 보는 것이 이것인데도.
+    # "HH:MM" 24시로 둔다(비면 모르는 것이다). 날짜는 `depart`가 진다.
+    leaves: str = ""
+    arrives: str = ""
     stops: int = 0
     minutes: int = 0
     # ★이 값이 **무엇을 덮는가**★ `round_trip` · `one_way` · 빈 문자열(모른다).
@@ -335,6 +410,8 @@ def to_flights(raw, *, now: str = "") -> list[Flight]:
             origin=str(row.get("origin") or "").strip(),
             destination=destination,
             depart=str(row.get("depart") or "").strip(),
+            leaves=_clock(row.get("leaves")),
+            arrives=_clock(row.get("arrives")),
             stops=_int(row.get("stops")),
             minutes=_int(row.get("duration_minutes")),
             fare_type=_fare_type(row.get("fare_type")),
@@ -344,6 +421,182 @@ def to_flights(raw, *, now: str = "") -> list[Flight]:
             note=str(row.get("note") or "").strip()[:200],
             seen_at=stamp))
     return out
+
+
+_CLOCK = re.compile(r"^(\d{1,2}):(\d{2})\s*(AM|PM)?$", re.I)
+
+
+def _clock(value) -> str:
+    """시각을 `HH:MM`(24시)로. ★못 읽는 것은 **없는 것**이다★ ★순수 함수★
+
+    ⚠️ 페이지가 오전/오후로 쓰는 곳이 많아(`7:10 AM`) 모델이 그대로 옮겨 온다.
+    반쯤 읽어 `7:10`으로 두면 ★저녁 7시 비행기가 아침 7시로 화면에 뜬다★ —
+    사람이 그것을 보고 표를 고른다. 24시로 바꾸거나, 못 바꾸면 비운다.
+    """
+    got = _CLOCK.match(str(value or "").strip())
+    if not got:
+        return ""
+    hour, minute, half = int(got.group(1)), int(got.group(2)), (got.group(3) or "").upper()
+    if minute > 59 or (half and not 1 <= hour <= 12) or (not half and hour > 23):
+        return ""
+    if half == "PM" and hour < 12:
+        hour += 12
+    elif half == "AM" and hour == 12:
+        hour = 0
+    return f"{hour:02d}:{minute:02d}"
+
+
+def flights_url(trip: Trip, *, currency: str = "") -> str:
+    """그 여정의 **항공편 목록 주소**. ★순수 함수★ (브라우저 없이 확인된다)
+
+    ## ★왜 자연어로 묻나★
+
+    구글 항공편은 조건을 `tfs=`라는 **인코딩된 덩어리**로도 받지만, 그것을 우리가
+    만들면 판이 바뀔 때마다 조용히 부서진다(무엇이 틀렸는지도 안 보인다). `q=`에
+    사람 말로 적으면 그쪽이 해석해 주고, **틀리면 화면에 그렇게 보인다**.
+
+    ⚠️ ★조건을 여기 적는 것과 **거르는 것은 다른 일**이다★ 적으면 맞는 것이 더
+    많이 올라오고, 거르는 것은 그래도 섞여 온 것을 쳐낸다. 둘 다 해야 한다
+    (`matches_trip`).
+
+    ★언어는 영어로 고정한다★ 옮겨야 할 낱말이 언어마다 달라지면 옮기기 자체가
+    언어를 탄다. 사용자가 읽는 글은 표시할 때 번역된다(CLAUDE.md의 그 경계).
+    """
+    from urllib.parse import quote_plus
+    said = ["Flights", "from", _place(trip.origin) or "anywhere",
+            "to", _place(trip.destination)]
+    if trip.depart:
+        said += ["on", trip.depart]
+    if trip.return_on:
+        said += ["returning", trip.return_on]
+    if trip.airline:
+        said += ["on", _place(trip.airline)]
+    if trip.nonstop:
+        said.append("nonstop")
+    query = quote_plus(" ".join(x for x in said if x))
+    url = f"{FLIGHTS_URL}?q={query}&hl=en"
+    if currency:
+        url += f"&curr={quote_plus(currency)}"
+    return url
+
+
+# ── ★날짜를 바꿔 본다★ (Sean 요구 2026-08-21) ────────────────────────────────
+#
+# > *"날짜도 바꿔 보고 가격을 비교해 본다. 이것을 에이전트가 해야 하는 것이다."*
+#
+# 사람이 항공권을 살 때 하는 일 그대로다 — 하루 늦추면 얼마인지 본다. 목록 페이지의
+# **날짜 표**가 앞뒤 며칠 값을 이미 계산해 두고 있어서, 그것을 열어 읽는다.
+#
+# ⚠️ ★이것만 누르기가 필요하다★(`browser.act`) 날짜 표는 주소로 안 열린다(실측).
+# 그래서 ★못 눌러도 검색 자체는 살아 있어야 한다★ — 권한이 없거나 단추 이름이
+# 바뀌면 날짜 비교만 빠지고 항공편은 그대로 나온다(있는 기능이 없는 기능을 죽이지
+# 않는다).
+
+_MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun",
+           "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+
+# 표의 칸 하나가 **자기 값과 자기 날짜를 함께** 말한다:
+#     "$215, Sep 12 to Sep 16"
+#     "$174, low price, Sep 15 to Sep 16"
+#     "$342, Sep 15 to Sep 19, selected"     ← 지금 보고 있는 조합
+# 편도 표는 뒷날짜가 없다: "$174, Sep 15"
+_GRID_CELL = re.compile(
+    r"([₩$€£¥])\s?([\d,]{3,})"                 # 값
+    r"(?:,\s*[a-z ]+)?"                        # "low price" 같은 꼬리표(있을 수도)
+    r",\s*([A-Z][a-z]{2})\s(\d{1,2})"          # 가는 날
+    r"(?:\s+to\s+([A-Z][a-z]{2})\s(\d{1,2}))?" # 오는 날(왕복일 때만)
+)
+
+_CURRENCY_SIGN = {"₩": "KRW", "$": "USD", "€": "EUR", "£": "GBP", "¥": "JPY"}
+
+
+def read_date_grid(targets, *, around: str = "") -> list[dict]:
+    """날짜 표에서 **날짜 조합마다의 값**을 뽑는다. ★순수 함수★
+
+    받는 것은 페이지의 **누를 수 있는 것들**(`read_page`의 `targets`)이다.
+    돌려주는 것: `[{"date","back","price","currency"}, …]` — `back`은 편도면 빈칸.
+
+    ## ⚠️ ★글로 읽다가 날짜와 값을 어긋나게 붙였다★ (2026-08-21에 잡은 결함)
+
+    처음에는 페이지 **본문**에서 날짜 목록과 값 목록을 따로 뽑아 자리로 짝지었다.
+    그런데 그 표는 (가는 날 × 오는 날) 격자다 — 날짜는 머리줄에 일곱, 값은 칸마다
+    마흔아홉. 자리로 맞추면 ★9월 15일에 남의 날 값이 붙는다★(실제로 $173이 붙었고,
+    그것은 다른 조합의 값이었다). 그렇게 만든 *"더 싼 날"* 은 거짓말이 된다.
+
+    ★칸마다 붙은 이름을 읽으면 짝지을 일이 아예 없다.★ 값과 날짜가 한 문장 안에
+    있으니 어긋날 수가 없다 — 자리로 맞추는 코드를 **없앤 것**이 고침이다.
+    """
+    year = (around or "")[:4]
+    out: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+    for target in targets or ():
+        if not isinstance(target, dict):
+            continue
+        label = " ".join(str(target.get(k) or "")
+                         for k in ("label", "aria", "name"))
+        found = _GRID_CELL.search(label)
+        if not found:
+            continue
+        sign, amount, month, day, back_month, back_day = found.groups()
+        date = _grid_date(month, day, year)
+        price = _int(str(amount).replace(",", ""))
+        if not date or not price:
+            continue
+        back = _grid_date(back_month or "", back_day or "", year)
+        key = (date, back)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append({"date": date, "back": back, "price": price,
+                    "currency": _CURRENCY_SIGN.get(sign, "")})
+    return sorted(out, key=lambda row: (row["date"], row["back"]))
+
+
+def _grid_date(month: str, day: str, year: str = "") -> str:
+    """`Sep`·`16` → `2026-09-16`. 해를 모르면 비운다. ★순수 함수★
+
+    ⚠️ ★해를 짐작하지 않는다★ 12월에 1월 표를 보면 해가 넘어가는데, 그것을 여기서
+    맞히려 들면 틀린 날짜가 열쇠에 들어가 **다른 여정의 기억을 덮는다**.
+    부르는 쪽이 보고 있던 날짜(`around`)의 해를 준다.
+    """
+    if not year.isdigit() or month not in _MONTHS:
+        return ""
+    number = _MONTHS.index(month) + 1
+    got = _int(day)
+    if not 1 <= got <= 31:
+        return ""
+    return f"{year}-{number:02d}-{got:02d}"
+
+
+def cheaper_days(grid: list[dict], *, than: int, on: str = "",
+                 back: str = "") -> list[dict]:
+    """지금 보는 값보다 **싼 날짜 조합**만, 싼 순서로. ★순수 함수★
+
+    ★보고 있는 조합은 뺀다★ 그것이 목록에 그대로 있으면 *"9월 15일에 가면 더
+    싸요"* 라고 자기가 보던 날을 권하게 된다.
+
+    ## ⚠️ ★돌아오는 날을 빼놓으면 **다른 여행을 권하게 된다**★
+
+    표는 (가는 날 × 오는 날) 격자다. 값만 보고 고르면 *"$169로 더 싸요"* 가
+    실제로는 **당일치기**일 수 있다(`Sep 16 to Sep 16`이 그랬다). 사용자가 나흘
+    여행을 계획하는데 그것을 권하는 것은 싼 것이 아니라 **다른 것**이다.
+
+    그래서 돌아오는 날을 아는 여정이면 ★같은 날 돌아오는 칸만★ 본다. 모르면
+    (편도이거나 아직 안 정했으면) 그 축으로 거를 근거가 없으므로 전부 본다 —
+    대신 각 줄이 자기 `back`을 지고 다녀서 화면이 **며칠 여행인지 말할 수 있다**.
+    """
+    if than <= 0:
+        return []
+    rows = []
+    for row in grid:
+        if int(row.get("price") or 0) <= 0 or int(row["price"]) >= than:
+            continue
+        if back and str(row.get("back") or "") != back:
+            continue
+        if row.get("date") == on and str(row.get("back") or "") == back:
+            continue
+        rows.append(row)
+    return sorted(rows, key=lambda row: (row["price"], row["date"]))
 
 
 def _fare_type(value) -> str:
@@ -492,6 +745,20 @@ def money(price, currency: str = "") -> str:
         return i18n.t("Price unknown")
     code = str(currency or "").upper().strip()
     return f"{value:,} {code}".strip() if code else f"{value:,}"
+
+
+def when_text(leaves, arrives) -> str:
+    """*"07:10 → 10:00"*. 둘 다 모르면 빈 문자열. ★순수 함수★
+
+    ★비는 것이 맞다★ 모르는 것을 *"모름"* 으로 채우면 비교 칸 여섯이 전부 진해져서
+    ★갈리는 값이 안 보인다★(화면 계약이 못 박은 자리 — 같은 값은 물러난다).
+
+    ⚠️ 도착만 아는 일은 없다시피 하지만, 있으면 그것만이라도 보인다.
+    """
+    start, end = str(leaves or "").strip(), str(arrives or "").strip()
+    if start and end:
+        return f"{start} → {end}"
+    return start or end
 
 
 def duration_text(minutes) -> str:
@@ -1057,7 +1324,7 @@ class FlightsPlugin(Plugin):
         "Show the next ones",
         "I booked it",
     )
-    version = "0.3.1"
+    version = "0.4.0"
     author = "cosmos"
     description = ("Searches for flights on a route and compares them with what the "
                    "user saw last time, remembering the routes and destinations they "
@@ -1089,9 +1356,27 @@ class FlightsPlugin(Plugin):
         },
         "required": [],
     }
-    capabilities = ["network", "memory"]
+    # ★브라우저를 쓴다고 **적는다**★ (2026-08-21) 목록 페이지를 직접 열기로 하면서
+    # 필요한 것이 늘었다. 설치 화면은 이 줄을 그대로 읽어 사용자에게 보인다 —
+    # 안 적고 쓰면 ★사용자가 승인한 것과 실제로 하는 일이 갈린다★(코어가 거부한다).
+    #
+    # `browser.act`는 ★날짜 표 하나 때문★이다: 그 표는 주소로 안 열리고 눌러야 한다.
+    # 없어도 항공편 검색은 그대로 돌고, 더 싼 날 비교만 빠진다.
+    capabilities = ["network", "memory", "browser", "browser.act"]
     requires_desktop = False
     view_title = "Flights"
+
+    # ★사용자가 아는 돈으로 보인다★ (Sean 16항목 ③ — 설정이 필요한 것은 설정된다)
+    #
+    # 값은 **언어가 아니라 값**이다(CLAUDE.md의 그 경계) — 화면 글은 번역되지만
+    # 78만원과 $560은 번역이 아니라 다른 사실이다. 비워 두면 페이지가 사용자 지역의
+    # 통화로 보여 주므로, ★기본값은 "정하지 않음"이 맞다★.
+    settings = (
+        {"id": "currency", "kind": "choice", "label": "Currency",
+         "options": ["", "KRW", "USD", "JPY", "EUR", "GBP", "CNY"],
+         "default": "",
+         "hint": "Leave empty to use whatever the flight listing shows for you."},
+    )
     # ★이 화면의 성격★(Sean 요구 2026-08-19) 넷을 나란히 놓고 **값으로** 고르는
     # 화면이다. 눈이 카드 사이를 오가야 하므로 넉넉해야 한다.
     character = {"glyph": "route", "density": "airy"}
@@ -1161,9 +1446,41 @@ class FlightsPlugin(Plugin):
         if brain is not None:
             self._remember(ctx, trip, found)
         diff = compare_with_past(past, found)
+        # ★날짜를 바꿔 본다★ — 사람이 표를 살 때 하는 그 일(Sean 요구 2026-08-21).
+        # 못 하면 빈 목록이고, 그래도 검색은 그대로 산다.
+        nearby = self._other_days(ctx, trip, found)
         # ★화면과 말이 **같은 판정**을 본다★ 두 곳에서 판정하면 서로 다른 것을 말한다.
-        self._remember_view(ctx, route, found, past, diff, trip)
-        return self._say(route, found, diff)
+        self._remember_view(ctx, route, found, past, diff, trip, nearby)
+        return self._say(route, found, diff, nearby)
+
+    def _other_days(self, ctx: ToolContext, trip: Trip,
+                    found: list[Flight]) -> list[dict]:
+        """앞뒤 며칠 중 **더 싼 날**. 못 열면 빈 목록(검색은 그대로 산다).
+
+        ⚠️ ★날짜를 모르면 비교할 것도 없다★ *"도쿄 가는 표"* 처럼 날짜 없이 물으면
+        표를 열어도 무엇 대비 싼지 말할 수 없다.
+        """
+        best = cheapest(found)
+        if not trip.depart or best is None or not best.price:
+            return []
+        page = ctx.read_page(flights_url(trip, currency=self._currency(ctx)),
+                             click=DATE_GRID_BUTTON, targets=GRID_TARGETS,
+                             settle=GRID_SETTLE_SEC)
+        if not page.get("ok"):
+            ctx.write_log(f"[flights] no date grid: {page.get('why') or 'unknown'}")
+            return []
+        if page.get("why"):
+            # 읽히긴 했는데 표를 못 열었다 — 열렸을 때와 구별해 남긴다
+            ctx.write_log(f"[flights] date grid: {page['why']}")
+        grid = read_date_grid(page.get("targets") or (), around=trip.depart)
+        cheaper = cheaper_days(grid, than=best.price, on=trip.depart,
+                               back=trip.return_on)
+        # ★읽은 칸 수를 남긴다★ *"더 싼 날 없음"* 은 두 가지 뜻이다 — 표를 읽었는데
+        # 정말 없는 것과, ★표를 한 칸도 못 읽은 것★. 세지 않으면 후자가 전자로 보이고
+        # 그러면 기능이 통째로 죽어 있어도 정상으로 읽힌다(이 저장소가 여러 번 데인 자리).
+        ctx.write_log(f"[flights] date grid: read {len(grid)} cells, "
+                      f"{len(cheaper)} cheaper than {best.price}")
+        return cheaper[:MAX_NEARBY_DAYS]
 
     def _nothing(self, route: str, trip: Trip, dropped: int) -> str:
         """★못 찾았으면 **왜** 못 찾았는지까지 말한다★ (Sean 요구 2026-08-19)
@@ -1186,7 +1503,7 @@ class FlightsPlugin(Plugin):
                       "airports, or a different date.", route=route)
 
     def _find(self, ctx: ToolContext, trip: Trip) -> tuple[list[Flight], int]:
-        """웹에서 찾아 **정규형으로** 옮기고 **조건으로 거른다**.
+        """항공편 목록 페이지를 **열어** 정규형으로 옮기고 **조건으로 거른다**.
 
         돌려주는 것은 (남은 것, ★조건 때문에 버린 수★)이다 — 버린 수를 안 세면
         *"표는 있는데 그 항공사가 없다"* 와 *"아무것도 못 찾았다"* 를 구별해서
@@ -1194,44 +1511,45 @@ class FlightsPlugin(Plugin):
 
         실패는 빈 목록이다(거짓말하지 않는다).
         """
-        query = self._query(trip)
-        try:
-            raw = ctx.run_tool("web_search", {"query": query})
-        except Exception as e:
-            ctx.write_log(f"[flights] search failed: {e}")
+        page = ctx.read_page(flights_url(trip, currency=self._currency(ctx)))
+        if not page.get("ok"):
+            # ★왜 못 봤는지를 로그에 남긴다★ 빈손만 남기면 다음 사람은 *"항공편이
+            # 없었나 보다"* 로 읽는다 — 브라우저가 안 뜬 것과 결과가 없는 것은 다르다.
+            ctx.write_log(f"[flights] could not open the listing: "
+                          f"{page.get('why') or 'unknown'}")
             return [], 0
         try:
-            moved = ctx.think(f"{_EXTRACT}\n\nSearch results:\n{str(raw)[:6000]}")
+            moved = ctx.think(f"{_EXTRACT}\n\nFlight results page:\n"
+                              f"{str(page.get('text') or '')[:6000]}")
         except Exception as e:
-            ctx.write_log(f"[flights] could not read the results: {e}")
+            ctx.write_log(f"[flights] could not read the page: {e}")
             return [], 0
         flights = to_flights(_only_json(moved))
-        # ★모델이 엉뚱한 노선을 섞어 오면 버린다★ 우리가 물은 곳으로 가는 것만 남긴다
+        # ★모델이 엉뚱한 노선을 섞어 오면 버린다★ 우리가 물은 곳으로 가는 것만 남긴다.
+        #
+        # ⚠️ ★공항 코드로 오는 것이 정상이 되었다★(2026-08-21) 목록 페이지는 목적지를
+        # `NRT`·`HND`로 적지 *"Tokyo"* 라고 적지 않는다. 이름으로만 맞추면 **전부
+        # 버리고** 빈손이 된다 — 그래서 이름이 안 맞으면 통째로 살린다(아래 `or`).
         wanted = _place(trip.destination).lower()
         on_route = [f for f in flights if wanted in f.destination.lower()] or flights
-        # ★조건은 **우리가** 건다★ 검색어에 넣는 것만으로는 안 걸린다 — 검색은 비슷한
-        # 것을 넉넉히 물어 오고, 모델은 그것을 옮기기만 한다(판정은 우리 코드다).
+        # ★조건은 **우리가** 건다★ 주소에 넣는 것만으로는 안 걸린다 — 페이지는 비슷한
+        # 것을 넉넉히 보여 주고, 모델은 그것을 옮기기만 한다(판정은 우리 코드다).
         kept = [f for f in on_route if matches_trip(f, trip)]
         return kept, len(on_route) - len(kept)
 
     @staticmethod
-    def _query(trip: Trip) -> str:
-        """웹에 물을 한 줄. ★검색어도 언어를 탄다★ 영어 낱말을 박아 두면 다른 언어
-        사용자는 엉뚱한 결과를 받는다 — 표시문이 아니라 **기능**이 언어에 묶이는
-        자리다(쇼핑 선례).
+    def _currency(ctx: ToolContext) -> str:
+        """사용자가 고른 통화. ★설정이 비면 페이지가 알아서 정한다★(빈 문자열).
 
-        ⚠️ ★조건을 검색어에 넣는 것과 **거르는 것은 다른 일**이다★ 넣으면 맞는 것이
-        더 많이 올라오고, 거르는 것은 그래도 섞여 온 것을 쳐낸다. 둘 다 해야 한다.
+        여기서 아무 값이나 기본으로 박으면 ★그 통화 사용자에게는 영영 남의 돈으로
+        보인다★ — 모르면 비워 두는 편이 낫다. 그때 목록은 그 사람의 지역 통화로 뜬다.
         """
-        parts = [trip.origin, "to", trip.destination, trip.depart]
-        if trip.return_on:
-            parts += [i18n.t("return"), trip.return_on]
-        if trip.airline:
-            parts.append(trip.airline)
-        if trip.nonstop:
-            parts.append(i18n.t("nonstop"))
-        parts.append(i18n.t("flight ticket price"))
-        return " ".join(x for x in parts if x)
+        try:
+            from cosmos.core import agent_settings
+            got = agent_settings.get("flights", "currency", "")
+        except Exception:
+            return ""
+        return str(got or "").strip().upper()
 
     # -- 계획 -----------------------------------------------------------------
     def _plans(self, ctx: ToolContext) -> str:
@@ -1491,6 +1809,12 @@ class FlightsPlugin(Plugin):
                        "signals": signals_worth_showing(cards),
                        "items": cards})
 
+        # ★날짜를 바꾸면 얼마인가★ (Sean 요구 2026-08-21) 값 흐름이 *"이 날이
+        # 싸지고 있나"* 라면, 이것은 *"다른 날로 가면 싼가"* 다. 사람이 표를 살 때
+        # 하는 두 가지가 이 둘이고, 여태 우리는 앞의 하나만 하고 있었다.
+        for line in self._nearby_lines(state):
+            blocks.append(line)
+
         if history := (state.get("history") or []):
             blocks.append({"type": "price_history", "items": history,
                            "label": i18n.t("Fare trend")})
@@ -1502,6 +1826,45 @@ class FlightsPlugin(Plugin):
             blocks.append({"type": "text", "tone": "info", "text": str(notice)})
         return {"title": self.view_title, "blocks": blocks,
                 "params": {"route": state.get("route", ""), "page": page}}
+
+    def _nearby_lines(self, state: dict) -> list[dict]:
+        """*"하루 늦추면 얼마"* 를 화면 줄로. 없으면 빈 목록(빈 상자를 그리지 않는다).
+
+        ★단추를 단다★ 더 싼 날을 보여 주고 **그 날로 다시 찾아 주지 않으면**,
+        사용자는 날짜를 손으로 다시 불러야 한다 — 그러면 우리가 알아낸 것이
+        그 사람의 일거리가 된다(원칙 ③: 어려우면 만들다 만 것이다).
+        """
+        rows = [row for row in (state.get("nearby") or []) if isinstance(row, dict)]
+        if not rows:
+            return []
+        out: list[dict] = [{"type": "text", "tone": "info",
+                            "text": i18n.t("Cheaper on other days")}]
+        buttons = []
+        for row in rows[:MAX_NEARBY_DAYS]:
+            date, back = str(row.get("date") or ""), str(row.get("back") or "")
+            if not date:
+                continue
+            # ★돌아오는 날도 함께 적는다★ 안 적으면 *"$136이 더 싸다"* 가 실제로는
+            # **다른 길이의 여행**일 수 있다(당일치기가 그렇게 섞여 들어왔다).
+            when = f"{date} ⇄ {back}" if back else date
+            buttons.append({
+                "label": f"{when} · {money(row.get('price'), row.get('currency', ''))}",
+                "tool": self.name,
+                "args": {"action": "search",
+                         "origin": _place(str(state.get("origin") or "")),
+                         "destination": self._destination_of(state),
+                         "depart": date, "return_on": back,
+                         "airline": str(state.get("airline") or ""),
+                         "nonstop": bool(state.get("nonstop"))}})
+        if buttons:
+            out.append({"type": "actions", "items": buttons})
+        return out
+
+    @staticmethod
+    def _destination_of(state: dict) -> str:
+        """화면 상태에서 목적지를 되찾는다 — 단추가 그것 없이는 다시 못 찾는다."""
+        first = next((i for i in (state.get("items") or []) if isinstance(i, dict)), {})
+        return _place(str(first.get("destination") or ""))
 
     @staticmethod
     def _route_label(state: dict) -> str:
@@ -1560,7 +1923,11 @@ class FlightsPlugin(Plugin):
                 # ★값이 아니라 **글**로 보낸다★ 분(minutes)을 그대로 실으면 화면에
                 # "515"가 뜨고, 그 숫자를 읽을 수 있는 사람은 없다.
                 "signals": {"stops": stops_text(item.get("stops")),
-                            "duration": duration_text(item.get("minutes"))},
+                            "duration": duration_text(item.get("minutes")),
+                            # ★비면 그 칸은 아예 안 그려진다★(`signals_worth_showing`)
+                            # — 모르는 것을 "모름"으로 채우면 여섯 칸이 다 진해진다
+                            "when": when_text(item.get("leaves"),
+                                              item.get("arrives"))},
                 # ★단추는 **번호만** 보낸다★ 주소를 실어 보내면 오염된 화면이 자기
                 # 주소를 열 수 있다.
                 "action": {"label": i18n.t("Go and look"), "tool": "browser_control",
@@ -1593,7 +1960,8 @@ class FlightsPlugin(Plugin):
 
     # -- 화면이 읽을 것을 남긴다 ----------------------------------------------
     def _remember_view(self, ctx: ToolContext, route: str, flights: list[Flight],
-                       past: dict, diff: dict, trip: Trip) -> None:
+                       past: dict, diff: dict, trip: Trip,
+                       nearby: list[dict] | None = None) -> None:
         """★도구와 화면이 **같은 것**을 본다★ 화면이 다시 검색하면 두 번 돈다."""
         # ★값 흐름은 **브레인에서** 온다★ 화면 상태에만 두면 다른 노선을 한 번
         # 찾아보는 순간 이력이 통째로 사라지고, 선은 영영 두 점을 못 넘는다.
@@ -1608,11 +1976,19 @@ class FlightsPlugin(Plugin):
                 # ★새 검색은 **첫 쪽부터**★ 3쪽을 보던 중에 다른 노선을 찾으면,
                 # 쪽수가 남아 있어 새 목록의 9번째부터 보인다(고장으로 읽힌다).
                 "route": route, "depart": trip.depart,
+                # ★출발지도 적는다★ 더 싼 날 단추가 이것 없이 다시 찾으면 *"어디서든
+                # 도쿄"* 가 되어 **다른 노선의 값**을 가져온다(항공편 줄에서 되찾을
+                # 수도 있지만, 그것은 공항 코드라 사용자가 말한 것과 다를 수 있다).
+                "origin": trip.origin,
                 "return_on": trip.return_on, "airline": trip.airline,
                 "nonstop": bool(trip.nonstop), "diff": diff,
                 "history": history, "page": 0,
+                # ★더 싼 날은 **화면도** 봐야 한다★ 말로만 하면 흘러가 버린다 —
+                # 날짜를 바꾸는 것은 값을 보고 **결정하는** 일이라 눈에 남아야 한다.
+                "nearby": list(nearby or []),
                 "items": [{"airline": f.airline, "origin": f.origin,
                            "destination": f.destination, "depart": f.depart,
+                           "leaves": f.leaves, "arrives": f.arrives,
                            "stops": f.stops, "minutes": f.minutes,
                            "fare_type": f.fare_type,
                            "price": f.price, "currency": f.currency,
@@ -1625,12 +2001,22 @@ class FlightsPlugin(Plugin):
             ctx.write_log("[flights] " + i18n.t(
                 "Could not save the screen state: {detail}", detail=e))
 
-    def _say(self, route: str, flights: list[Flight], diff: dict) -> str:
+    def _say(self, route: str, flights: list[Flight], diff: dict,
+             nearby: list[dict] | None = None) -> str:
         """★음성은 짧아야 한다★ 목록을 읽어 주면 사람은 넷째쯤에서 앞을 잊는다."""
         lines = [headline(route, flights, diff)]
         for f in flights[1:2]:
-            lines.append(f"{f.airline} {money(f.price, f.currency)}, "
+            when = f" {f.leaves}" if f.leaves else ""
+            lines.append(f"{f.airline}{when} {money(f.price, f.currency)}, "
                          f"{stops_text(f.stops)}".strip())
+        # ★더 싼 날은 **한 줄만**★ 목록을 읽어 주면 음성이 길어져 아무것도 안 남는다.
+        # 가장 싼 하루만 말하고 나머지는 화면이 진다.
+        if nearby:
+            best = nearby[0]
+            lines.append(i18n.t(
+                "Leaving {date} instead would be {price}.",
+                date=best.get("date", ""),
+                price=money(best.get("price"), best.get("currency", ""))))
         if len(flights) > PAGE_SIZE:
             lines.append(i18n.t("I lined up {count} of them on the screen.",
                                 count=len(flights)))

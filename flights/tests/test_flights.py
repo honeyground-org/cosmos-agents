@@ -25,27 +25,59 @@ from flights_scout import FlightsPlugin
 
 _ROWS = json.dumps([
     {"airline": "Korean Air", "origin": "ICN", "destination": "Tokyo",
-     "depart": "2026-09-10", "stops": 0, "price": 380000, "currency": "KRW",
+     "depart": "2026-09-10", "leaves": "7:10 AM", "arrives": "9:40 AM",
+     "stops": 0, "price": 380000, "currency": "KRW",
      "url": "https://example.com/a", "note": "morning departure"},
     {"airline": "Peach", "origin": "ICN", "destination": "Tokyo",
-     "depart": "2026-09-10", "stops": 1, "price": 210000, "currency": "KRW",
+     "depart": "2026-09-10", "leaves": "6:35 PM", "arrives": "9:05 PM",
+     "stops": 1, "price": 210000, "currency": "KRW",
      "url": "https://example.com/b"},
     {"airline": "Mystery Air", "origin": "ICN", "destination": "Tokyo",
      "stops": 0, "price": 0, "currency": "KRW"},
 ])
 
+# ★날짜 표의 칸★ — 실제 페이지가 칸마다 다는 이름 그대로다(2026-08-21 실측):
+#     "$215, Sep 12 to Sep 16"  ·  "$174, low price, Sep 15 to Sep 16"
+# 글이 아니라 **이름**에서 읽는 것이 요점이다 — 값과 날짜가 한 문장에 있어야
+# 어긋나지 않는다(글에서 자리로 짝지었다가 남의 날 값을 붙인 적이 있다).
+_GRID = [
+    {"label": "₩380,000, Sep 10 to Sep 14"},
+    {"label": "₩250,000, low price, Sep 11 to Sep 14"},
+    {"label": "₩300,000, Sep 12 to Sep 14"},
+    {"label": "₩190,000, Sep 11 to Sep 18"},
+    {"label": "Date grid"},                       # 값이 없는 것은 그냥 지나간다
+]
+
 
 class _Ctx:
-    def __init__(self, brain=None, *, search="results", extract=_ROWS, home=None):
+    def __init__(self, brain=None, *, search="results", extract=_ROWS, home=None,
+                 page_text="flight results", grid=None, can_read=True):
         self.brain = brain
         self.user_id = "u1"
         self.logs: list[str] = []
         self.tool_calls: list[tuple] = []
+        self.pages: list[dict] = []        # ★무엇을 열었나★ — 주소를 검사한다
         self.notices: dict[str, dict] = {}
         self.cleared: list[str] = []
         self._search = search
         self._extract = extract
         self._home = home
+        self._page_text = page_text
+        self._grid = _GRID if grid is None else grid
+        self._can_read = can_read
+
+    # ★항공편 목록을 여는 문★ — 제품이 지나는 그 길이다(`ToolContext.read_page`).
+    #
+    # ⚠️ 대역이 **부르는 쪽을 가리지 않도록** 진짜와 같은 모양으로 돌려준다:
+    # 누르면 `targets`에 표의 칸들이 오고, 안 누르면 글만 온다.
+    def read_page(self, url, *, click="", settle=None, chars=None, targets=None):
+        self.pages.append({"url": url, "click": click, "targets": targets})
+        if not self._can_read:
+            return {"ok": False, "url": url, "title": "", "text": "",
+                    "targets": [], "why": "no browser here"}
+        return {"ok": True, "url": url, "title": "Flights",
+                "text": self._page_text,
+                "targets": list(self._grid) if click else [], "why": ""}
 
     # ★화면 상태의 자리★ 없으면 `_remember_view`가 조용히 실패하고, 그러면 화면을
     # 검사하는 그물이 **빈 화면을 보고도 통과한다**.
@@ -315,23 +347,41 @@ def test_plans_with_nothing_says_nothing(tmp_path):
 
 # ── ⑥ 검색과 언어 ────────────────────────────────────────────────────────────
 
-def test_the_search_terms_go_through_translation(monkeypatch):
-    """★기능 문자열도 언어를 탄다★ 영어를 박으면 한국어 사용자가 엉뚱한 결과를 받는다."""
-    seen = {}
-    monkeypatch.setattr(core.i18n, "t",
-                        lambda text, **kw: seen.setdefault("asked", text) and text)
+def test_the_listing_is_opened_in_english_whatever_the_user_speaks(monkeypatch):
+    """★페이지는 영어로 연다 — 그리고 그것이 다국어 규율을 **어기지 않는다**★
+
+    전에는 검색어를 번역해서 던졌다(*"기능 문자열도 언어를 탄다"*). 목록 페이지는
+    반대다: **모델이 옮겨야 할 낱말**이 언어마다 달라지면 옮기기 자체가 언어를 탄다.
+    사용자가 읽는 글은 표시할 때 번역되므로, 경계는 그대로 지켜진다.
+
+    ⚠️ 이 검사가 없으면 *"페이지도 사용자 언어로"* 라는 고침이 조용히 들어오고,
+    그러면 `_EXTRACT`가 한국어 페이지를 영어 규칙으로 읽다 빈손이 된다.
+    """
+    monkeypatch.setattr(core.i18n, "t", lambda text, **kw: "번역된 " + text)
     ctx = _Ctx()
     FlightsPlugin().run(ctx, action="search", origin="ICN", destination="Tokyo")
-    assert seen["asked"] == "flight ticket price"
-    assert "flight ticket price" in ctx.tool_calls[0][1]["query"]
+    assert "hl=en" in ctx.pages[0]["url"]
+    assert "번역된" not in ctx.pages[0]["url"]
 
 
-def test_the_query_carries_the_route_and_the_date():
+def test_the_address_carries_the_route_and_the_date():
     ctx = _Ctx()
     FlightsPlugin().run(ctx, action="search", origin="ICN", destination="Tokyo",
                         depart="2026-09-10")
-    query = ctx.tool_calls[0][1]["query"]
-    assert "ICN" in query and "Tokyo" in query and "2026-09-10" in query
+    url = ctx.pages[0]["url"]
+    assert "ICN" in url and "Tokyo" in url and "2026-09-10" in url
+
+
+def test_the_currency_the_user_chose_reaches_the_listing(monkeypatch):
+    """★값은 **사용자가 아는 돈**으로 보여야 한다★ (설정 ③)
+
+    설정해 두고 안 쓰면 그 칸은 장식이다 — 화면에 물어보는 칸이 있는데 아무 데도
+    안 닿는 것이 이 저장소가 여러 번 데인 모양이다(만들어 놓고 잇지 않기).
+    """
+    monkeypatch.setattr(core.FlightsPlugin, "_currency", staticmethod(lambda ctx: "JPY"))
+    ctx = _Ctx()
+    FlightsPlugin().run(ctx, action="search", destination="Tokyo")
+    assert "curr=JPY" in ctx.pages[0]["url"]
 
 
 def test_flights_to_somewhere_else_are_dropped(tmp_path):
@@ -376,13 +426,13 @@ def test_without_a_destination_it_asks():
     assert "where you want to fly" in FlightsPlugin().run(_Ctx(), action="search")
 
 
-def test_a_failed_web_search_does_not_pretend():
-    class _NoSearch(_Ctx):
-        def run_tool(self, name, args):
-            raise RuntimeError("network down")
-
-    answer = FlightsPlugin().run(_NoSearch(), action="search", destination="Tokyo")
+def test_a_page_we_could_not_open_does_not_pretend():
+    """★못 열었으면 못 열었다고 한다★ — 빈손을 *"항공편이 없다"* 로 말하지 않는다."""
+    ctx = _Ctx(can_read=False)
+    answer = FlightsPlugin().run(ctx, action="search", destination="Tokyo")
     assert "could not find" in answer
+    # ★왜 못 봤는지가 기록에 남는다★ 안 남기면 다음 사람은 노선을 의심한다
+    assert any("could not open the listing" in line for line in ctx.logs)
 
 
 def test_the_declared_actions_and_the_table_are_the_same_list():
@@ -719,10 +769,10 @@ def test_it_does_not_search_again_on_every_single_turn(tmp_path):
     plugin = FlightsPlugin()
     ctx = _Ctx(brain=brain, home=tmp_path, extract=json.dumps([_row("Peach", 190_000)]))
     plugin.advise(ctx)
-    first = len(ctx.tool_calls)
+    first = len(ctx.pages)
     assert first, "★측정 무효★ 한 번도 안 찾아봤습니다"
     plugin.advise(ctx)
-    assert len(ctx.tool_calls) == first, "말이 오갈 때마다 다시 검색하고 있습니다"
+    assert len(ctx.pages) == first, "말이 오갈 때마다 다시 검색하고 있습니다"
 
 
 # ── ⑩ 화면 ───────────────────────────────────────────────────────────────────
@@ -961,16 +1011,17 @@ def test_nonstop_only_means_nonstop_only():
     assert not core.matches_trip(hop, core.Trip(nonstop=True))
 
 
-def test_the_search_query_carries_every_condition(tmp_path):
-    """★조건을 검색어에 넣는 것과 거르는 것은 다른 일이다★ 넣으면 맞는 것이 더 많이
+def test_the_address_carries_every_condition(tmp_path):
+    """★조건을 주소에 넣는 것과 거르는 것은 다른 일이다★ 넣으면 맞는 것이 더 많이
     올라오고, 거르는 것은 그래도 섞여 온 것을 쳐낸다 — 둘 다 해야 한다."""
+    from urllib.parse import unquote_plus
     ctx = _Ctx(home=tmp_path)
     FlightsPlugin().run(ctx, action="search", origin="ICN", destination="Tokyo",
                         depart="2026-09-10", return_on="2026-09-14",
                         airline="Korean Air", nonstop=True)
-    query = ctx.tool_calls[0][1]["query"]
-    for piece in ("ICN", "Tokyo", "2026-09-10", "2026-09-14", "Korean Air"):
-        assert piece in query, f"검색어에 {piece!r}가 없습니다: {query}"
+    url = unquote_plus(ctx.pages[0]["url"])
+    for piece in ("ICN", "Tokyo", "2026-09-10", "2026-09-14", "Korean Air", "nonstop"):
+        assert piece in url, f"주소에 {piece!r}가 없습니다: {url}"
 
 
 def test_flights_that_do_not_match_the_conditions_are_dropped(tmp_path):
@@ -1018,11 +1069,12 @@ def test_the_conditions_are_remembered_so_the_background_looks_at_the_same_thing
     assert trip.nonstop is True
 
     # 배경 재점검이 **같은 조건**으로 웹에 묻는다
-    ctx.tool_calls.clear()
+    ctx.pages.clear()
     plugin.advise(ctx)
-    query = ctx.tool_calls[0][1]["query"]
+    from urllib.parse import unquote_plus
+    url = unquote_plus(ctx.pages[0]["url"])
     for piece in ("2026-09-14", "Korean Air"):
-        assert piece in query, f"배경 재점검이 조건을 잃었습니다: {query}"
+        assert piece in url, f"배경 재점검이 조건을 잃었습니다: {url}"
 
 
 def test_the_alert_button_reopens_the_same_conditions(tmp_path):
@@ -1156,3 +1208,205 @@ def test_the_round_trip_screen_pushes_the_round_trip_fare(tmp_path):
     assert pushed["title"] == "Jeju Air", \
         f"왕복을 물었는데 편도 값을 밀고 있습니다: {pushed['title']}"
     assert "Peach" not in [i["title"] for i in compare["items"]]
+
+
+# ── ⑦ ★날짜를 바꿔 본다★ (Sean 요구 2026-08-21) ──────────────────────────────
+#
+# > *"날짜도 바꿔 보고 가격을 비교해 본다. 이것을 에이전트가 해야 하는 것이다."*
+
+def test_the_clock_survives_the_afternoon():
+    """★오후 7시가 아침 7시로 화면에 뜨면 사람이 그것을 보고 표를 산다★
+
+    페이지는 `7:10 PM`으로 쓰고 우리 정규형은 24시로 둔다. 반쯤 옮기면 열두 시간이
+    조용히 어긋난다 — 뮤테이션이 `+12`를 지워도 아침 편은 그대로라 안 걸린다.
+    """
+    assert core._clock("7:10 AM") == "07:10"
+    assert core._clock("7:10 PM") == "19:10"
+    assert core._clock("12:05 AM") == "00:05"      # 자정은 0시다
+    assert core._clock("12:05 PM") == "12:05"      # 정오는 12시다
+    assert core._clock("19:25") == "19:25"
+    # ★못 읽는 것은 **없는 것**이다★ — 반쯤 읽어 화면에 올리지 않는다
+    for junk in ("25:00", "7:99 AM", "soon", "", None):
+        assert core._clock(junk) == ""
+
+
+def test_the_date_grid_never_pairs_a_price_with_the_wrong_day():
+    """★이 검사가 있는 이유 — 실제로 어긋나게 붙였다★ (2026-08-21에 잡은 결함)
+
+    처음에는 페이지 **본문**에서 날짜 목록과 값 목록을 따로 뽑아 자리로 짝지었다.
+    그 표는 (가는 날 × 오는 날) 격자라 날짜 일곱에 값이 마흔아홉이고, 자리로
+    맞추면 9월 15일에 **남의 날 값**이 붙는다. 그렇게 만든 *"더 싼 날"* 은
+    거짓말이고, 사용자는 그것을 보고 표를 산다.
+
+    ★칸마다 붙은 이름에는 값과 날짜가 한 문장에 있다★ — 짝지을 일이 없다.
+    """
+    grid = core.read_date_grid([
+        {"label": "$215, Sep 12 to Sep 16"},
+        {"label": "$174, low price, Sep 15 to Sep 16"},
+        {"label": "$342, Sep 15 to Sep 19, selected"},
+    ], around="2026-09-15")
+    by_day = {(row["date"], row["back"]): row["price"] for row in grid}
+    assert by_day[("2026-09-12", "2026-09-16")] == 215
+    assert by_day[("2026-09-15", "2026-09-16")] == 174
+    assert by_day[("2026-09-15", "2026-09-19")] == 342
+    assert all(row["currency"] == "USD" for row in grid)
+
+
+def test_the_grid_skips_what_it_cannot_read():
+    """★못 읽으면 버린다★ 반쯤 읽은 줄이 화면에 오르면 그것이 거짓이 된다."""
+    grid = core.read_date_grid([
+        {"label": "Date grid"},                    # 값도 날짜도 없다
+        {"label": "$342"},                         # 값만 있다
+        {"label": "Sep 15 to Sep 19"},             # 날짜만 있다
+        {"label": "₩380,000, Sep 10"},             # 편도 — 오는 날이 없다
+        "not a dict",
+    ], around="2026-09-10")
+    assert len(grid) == 1
+    assert grid[0] == {"date": "2026-09-10", "back": "", "price": 380000,
+                       "currency": "KRW"}
+
+
+def test_the_grid_needs_the_year_from_the_trip():
+    """★해를 짐작하지 않는다★ 틀린 날짜가 열쇠에 들어가면 남의 여정을 덮어쓴다."""
+    assert core.read_date_grid([{"label": "$174, Sep 15"}]) == []
+
+
+def test_a_cheaper_day_that_is_a_different_trip_is_not_offered():
+    """★돌아오는 날을 빼놓으면 **다른 여행을 권하게 된다**★
+
+    당일치기가 나흘 여행보다 싼 것은 당연하다. 그것을 *"더 싸요"* 라고 내밀면
+    싼 것이 아니라 **다른 것**을 권하는 것이다(실측에서 `Sep 16 to Sep 16`이
+    가장 싼 칸이었다).
+    """
+    grid = [
+        {"date": "2026-09-16", "back": "2026-09-16", "price": 169, "currency": "USD"},
+        {"date": "2026-09-16", "back": "2026-09-19", "price": 300, "currency": "USD"},
+        {"date": "2026-09-15", "back": "2026-09-19", "price": 342, "currency": "USD"},
+    ]
+    got = core.cheaper_days(grid, than=342, on="2026-09-15", back="2026-09-19")
+    assert [row["date"] for row in got] == ["2026-09-16"]
+    assert got[0]["price"] == 300, "당일치기를 같은 여행인 척 내밀고 있습니다"
+
+    # ★돌아오는 날을 모르면 그 축으로 거를 근거가 없다★ — 대신 각 줄이 자기
+    # `back`을 지고 다녀 화면이 며칠 여행인지 말할 수 있다
+    loose = core.cheaper_days(grid, than=342, on="2026-09-15")
+    assert len(loose) == 2 and all(row["back"] for row in loose)
+
+
+def test_the_day_you_are_already_looking_at_is_not_offered_back():
+    """자기가 보던 날을 *"더 싼 날"* 로 권하면 고장으로 읽힌다."""
+    grid = [{"date": "2026-09-15", "back": "2026-09-19", "price": 200, "currency": "USD"}]
+    assert core.cheaper_days(grid, than=342, on="2026-09-15", back="2026-09-19") == []
+
+
+def test_cheaper_days_needs_something_to_compare_with():
+    """값을 모르면 *"더 싸다"* 를 말할 수 없다 — 0을 기준으로 삼지 않는다."""
+    grid = [{"date": "2026-09-16", "back": "", "price": 100, "currency": "USD"}]
+    assert core.cheaper_days(grid, than=0) == []
+
+
+def test_the_screen_offers_the_cheaper_day_as_a_button(tmp_path):
+    """★알아낸 것을 사용자 일거리로 만들지 않는다★ (Sean 규율 ③)
+
+    더 싼 날을 보여 주고 그 날로 다시 찾아 주지 않으면, 사용자는 날짜를 손으로
+    다시 불러야 한다 — 그러면 우리가 알아낸 것이 그 사람의 숙제가 된다.
+    """
+    brain = LiteMemoryProvider(tmp_path / "brain")
+    plugin = FlightsPlugin()
+    ctx = _Ctx(brain=brain, home=tmp_path,
+               extract=json.dumps([_row("Korean Air", 380_000, stops=0)]))
+    plugin.run(ctx, action="search", origin="ICN", destination="Tokyo",
+               depart="2026-09-10", return_on="2026-09-14")
+
+    blocks = _screen(plugin, ctx)["blocks"]
+    buttons = [b for b in blocks if b["type"] == "actions"]
+    jump = next((item for block in buttons for item in block["items"]
+                 if item.get("args", {}).get("action") == "search"), None)
+    assert jump is not None, "더 싼 날을 찾아 놓고 갈 길을 안 열어 줬습니다"
+    # ★그 단추가 **같은 여행**을 다시 찾는다★ 조건을 흘리면 다른 목록이 뜬다
+    args = jump["args"]
+    assert args["destination"] == "Tokyo" and args["origin"] == "ICN"
+    assert args["depart"] == "2026-09-11" and args["return_on"] == "2026-09-14"
+
+
+def test_the_date_grid_asks_for_more_targets_than_the_default(tmp_path):
+    """★60에서 끊으면 뒤쪽 날짜가 통째로 사라진다★ 표는 칸이 마흔아홉이다.
+
+    ⚠️ 이 한 줄이 없으면 표는 열리는데 **읽히는 것이 앞부분뿐**이라, 더 싼 날이
+    있어도 없다고 말한다. 조용히 틀리는 종류라 사람 눈으로는 안 걸린다.
+    """
+    ctx = _Ctx(home=tmp_path,
+               extract=json.dumps([_row("Korean Air", 380_000, stops=0)]))
+    FlightsPlugin().run(ctx, action="search", origin="ICN", destination="Tokyo",
+                        depart="2026-09-10")
+    opened = next(p for p in ctx.pages if p["click"])
+    assert opened["targets"] and opened["targets"] > 60
+
+
+def test_without_a_date_there_is_nothing_to_compare(tmp_path):
+    """★날짜를 모르면 표를 열어도 무엇 대비 싼지 말할 수 없다★ — 안 연다."""
+    ctx = _Ctx(home=tmp_path,
+               extract=json.dumps([_row("Korean Air", 380_000, stops=0)]))
+    FlightsPlugin().run(ctx, action="search", origin="ICN", destination="Tokyo")
+    assert not any(p["click"] for p in ctx.pages), \
+        "날짜도 없이 날짜 표를 열고 있습니다"
+
+
+def test_the_screen_says_when_the_flight_leaves(tmp_path):
+    """★값 다음으로 보는 것이 시각이다★ (Sean: *"가격과 일정"*)
+
+    검색 결과로 값을 얻던 시절에는 채울 수가 없어 이 칸이 아예 없었다.
+    ⚠️ 화면 계약(`COMPARE_SIGNALS`)에 `when`이 없으면 이 신호는 조용히 버려진다.
+    """
+    from cosmos.contracts.view import COMPARE_SIGNALS
+    assert "when" in COMPARE_SIGNALS, "화면 계약에 시각 칸이 없습니다"
+
+    brain = LiteMemoryProvider(tmp_path / "brain")
+    plugin = FlightsPlugin()
+    ctx = _Ctx(brain=brain, home=tmp_path)
+    plugin.run(ctx, action="search", origin="ICN", destination="Tokyo")
+    compare = next(b for b in _screen(plugin, ctx)["blocks"] if b["type"] == "compare")
+    assert "when" in compare["signals"], "시각 칸이 화면에 안 갔습니다"
+    korean = next(i for i in compare["items"] if i["title"] == "Korean Air")
+    assert korean["signals"]["when"] == "07:10 → 09:40"
+    peach = next(i for i in compare["items"] if i["title"] == "Peach")
+    assert peach["signals"]["when"] == "18:35 → 21:05", "오후 편이 오전으로 뜹니다"
+
+
+def test_a_flight_with_no_clock_shows_no_clock():
+    """★모르는 것을 '모름'으로 채우면 비교 칸 여섯이 다 진해진다★ — 비워 둔다."""
+    assert core.when_text("", "") == ""
+    assert core.when_text("07:10", "") == "07:10"
+    assert core.when_text("07:10", "09:40") == "07:10 → 09:40"
+
+
+def test_the_agent_declares_the_browser_it_actually_drives():
+    """★안 적고 쓰면 사용자가 승인한 것과 하는 일이 갈린다★ — 코어가 거부한다."""
+    declared = set(FlightsPlugin.capabilities)
+    assert "browser" in declared, "브라우저를 쓰면서 안 적었습니다"
+    assert "browser.act" in declared, "날짜 표를 누르면서 안 적었습니다"
+
+
+def test_losing_the_date_grid_does_not_lose_the_search(tmp_path):
+    """★있는 기능이 없는 기능을 죽이지 않는다★
+
+    날짜 표는 눌러야 열리는데, 권한이 없거나 단추 이름이 바뀌면 못 연다. 그때
+    ★항공편 검색까지 같이 죽으면★ 사용자는 있는 것도 못 쓴다.
+    """
+    class _NoGrid(_Ctx):
+        def read_page(self, url, *, click="", settle=None, chars=None, targets=None):
+            self.pages.append({"url": url, "click": click, "targets": targets})
+            if click:
+                return {"ok": False, "url": url, "title": "", "text": "",
+                        "targets": [], "why": "'browser.act' is switched off"}
+            return {"ok": True, "url": url, "title": "Flights",
+                    "text": "flight results", "targets": [], "why": ""}
+
+    brain = LiteMemoryProvider(tmp_path / "brain")
+    plugin = FlightsPlugin()
+    ctx = _NoGrid(brain=brain, home=tmp_path)
+    answer = plugin.run(ctx, action="search", origin="ICN", destination="Tokyo",
+                        depart="2026-09-10")
+    assert "Peach" in answer, "날짜 표를 못 열었다고 검색까지 죽었습니다"
+    blocks = _screen(plugin, ctx)["blocks"]
+    assert any(b["type"] == "compare" for b in blocks)
