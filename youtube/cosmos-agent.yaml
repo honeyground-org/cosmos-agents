@@ -6,7 +6,7 @@
 # fall back to English when one is missing.
 id: honeyground-org/youtube
 type: feature
-version: 0.3.0
+version: 0.3.1
 contract: plugin/v1
 title: YouTube
 # ★설치 화면은 코드를 받기 **전에** 그려진다★ — 그래서 무엇을 기억하는지가 여기

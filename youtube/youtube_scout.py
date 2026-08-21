@@ -683,7 +683,7 @@ class YouTubePlugin(Plugin):
         "What is this video about?",
         "Upload that clip to my channel as unlisted",
     )
-    version = "0.2.2"
+    version = "0.3.1"
     author = "cosmos"
     description = ("Searches YouTube, describes or summarizes a video, lists what is "
                    "trending, opens a video in the browser, and uploads a video file "
