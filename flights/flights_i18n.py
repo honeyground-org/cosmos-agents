@@ -28,6 +28,8 @@ LANGUAGES = ("ko", "ja", "de", "es", "fr")
 
 TRANSLATIONS: dict[str, dict[str, str]] = {
     "ko": {
+        "I could not open the flight listing just now, so I have not actually looked yet. Shall I try again?": "지금 항공편 목록을 열지 못해서 아직 실제로 찾아보지 못했습니다. 다시 해 볼까요?",
+        "I opened the listing but could not read the fares just now. Give me a moment and ask again.": "목록은 열었지만 지금 운임을 읽지 못했습니다. 잠시 뒤에 다시 물어봐 주세요.",
         "Cheaper on other days": "다른 날이 더 쌉니다",
         "Leaving {date} instead would be {price}.": "{date}에 떠나면 {price}입니다.",
         "Round trip": "왕복",
@@ -99,6 +101,8 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
             "{route} 이(가) 보셨을 때보다 {amount} 싸졌어요.",
     },
     "ja": {
+        "I could not open the flight listing just now, so I have not actually looked yet. Shall I try again?": "今は航空券リストを開けなかったため、まだ実際に探せていません。もう一度試しますか?",
+        "I opened the listing but could not read the fares just now. Give me a moment and ask again.": "リストは開けましたが、今は運賃を読み取れませんでした。少し経ってからもう一度お尋ねください。",
         "Cheaper on other days": "別の日はもっと安いです",
         "Leaving {date} instead would be {price}.": "{date} に出発すると {price} です。",
         "Round trip": "往復",
@@ -170,6 +174,8 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
             "{route} がご覧になった時より {amount} 安くなりました。",
     },
     "de": {
+        "I could not open the flight listing just now, so I have not actually looked yet. Shall I try again?": "Ich konnte die Flugliste gerade nicht öffnen und habe daher noch gar nicht gesucht. Soll ich es erneut versuchen?",
+        "I opened the listing but could not read the fares just now. Give me a moment and ask again.": "Ich habe die Liste geöffnet, konnte die Preise gerade aber nicht lesen. Frag gleich noch einmal.",
         "Cheaper on other days": "An anderen Tagen günstiger",
         "Leaving {date} instead would be {price}.": "Am {date} zu fliegen kostet {price}.",
         "Round trip": "Hin und zurück",
@@ -251,6 +257,8 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
             "{route} ist {amount} günstiger als beim letzten Blick.",
     },
     "es": {
+        "I could not open the flight listing just now, so I have not actually looked yet. Shall I try again?": "No he podido abrir el listado de vuelos ahora mismo, así que todavía no he buscado. ¿Lo intento otra vez?",
+        "I opened the listing but could not read the fares just now. Give me a moment and ask again.": "Abrí el listado pero no he podido leer las tarifas ahora mismo. Dame un momento y vuelve a preguntar.",
         "Cheaper on other days": "Más barato en otros días",
         "Leaving {date} instead would be {price}.": "Salir el {date} costaría {price}.",
         "Round trip": "Ida y vuelta",
@@ -331,6 +339,8 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
             "{route} está {amount} más barato que cuando lo miraste.",
     },
     "fr": {
+        "I could not open the flight listing just now, so I have not actually looked yet. Shall I try again?": "Je n'ai pas pu ouvrir la liste des vols à l'instant, je n'ai donc pas encore cherché. Voulez-vous que je réessaie ?",
+        "I opened the listing but could not read the fares just now. Give me a moment and ask again.": "J'ai ouvert la liste mais je n'ai pas pu lire les tarifs à l'instant. Laissez-moi un moment et redemandez.",
         "Cheaper on other days": "Moins cher d'autres jours",
         "Leaving {date} instead would be {price}.": "Partir le {date} coûterait {price}.",
         "Round trip": "Aller-retour",

@@ -1381,6 +1381,20 @@ class FlightsPlugin(Plugin):
     requires_desktop = False
     view_title = "Flights"
 
+    # ★기계가 나를 깨워 본다★ (Sean 지적 2026-08-23 — `scripts/verify_live.py`)
+    #
+    # 이 에이전트가 정확히 이 자리에서 죽어 있었다: 브라우저가 안 떠도, 배선이
+    # 끊겨도, 권한이 막혀도 사용자에게 가는 말은 똑같이 *"항공편을 찾을 수 없네요"*
+    # 였다. ★고장 신호가 없으니 발견자는 매번 사용자였다.★
+    #
+    # ⚠️ 날짜를 못 박지 않는다 — 박아 두면 그날이 지난 뒤 이 점검은 **언제나 빈손**이
+    # 되고, 그것을 결함으로 읽게 된다. 부르는 쪽이 오늘을 기준으로 채운다.
+    probe = {"args": {"action": "search", "origin": "Seoul", "destination": "Tokyo"},
+             # 화면에 비교 카드가 서야 진짜로 찾은 것이다(말만으로는 알 수 없다)
+             "needs": ("compare",),
+             # 페이지를 열고 모델이 옮기는 데 드는 시간 — 이보다 오래면 대화에서는 실패다
+             "sec": 45}
+
     # ★사용자가 아는 돈으로 보인다★ (Sean 16항목 ③ — 설정이 필요한 것은 설정된다)
     #
     # 값은 **언어가 아니라 값**이다(CLAUDE.md의 그 경계) — 화면 글은 번역되지만
@@ -1454,10 +1468,10 @@ class FlightsPlugin(Plugin):
         brain = getattr(ctx, "brain", None)
         uid = str(getattr(ctx, "user_id", "") or "local")
         past = recall_route(brain, uid, trip=trip)
-        found, dropped = self._find(ctx, trip)
+        found, dropped, trouble = self._find(ctx, trip)
         found = rank(found)
         if not found:
-            return self._nothing(route, trip, dropped)
+            return self._nothing(route, trip, dropped, trouble)
         if brain is not None:
             self._remember(ctx, trip, found)
         diff = compare_with_past(past, found)
@@ -1497,13 +1511,29 @@ class FlightsPlugin(Plugin):
                       f"{len(cheaper)} cheaper than {best.price}")
         return cheaper[:MAX_NEARBY_DAYS]
 
-    def _nothing(self, route: str, trip: Trip, dropped: int) -> str:
+    def _nothing(self, route: str, trip: Trip, dropped: int,
+                 trouble: str = "") -> str:
         """★못 찾았으면 **왜** 못 찾았는지까지 말한다★ (Sean 요구 2026-08-19)
 
         조건을 받기 시작하면 빈손이 나오는 길이 하나 더 생긴다 — 표는 있는데 **그
         조건에 맞는 것이** 없는 경우다. 그냥 *"못 찾았어요"* 라고 하면 사용자는
         노선이나 날짜를 의심하고, 정작 풀 수 있는 조건은 손대지 않는다.
+
+        ## ★그리고 **우리가 못 본 것**은 또 다른 경우다★ (Sean 지적 2026-08-23)
+
+        > *"그때 비행기 티켓이 넘쳐나는데 왜 없다고 하는 거야?"*
+
+        브라우저가 안 떴거나 모델 한도를 넘었을 때도 같은 말을 하고 있었다. 그러면
+        사용자는 ★있는 표를 없다고 듣고, 고장인 줄 모른다★. 이제 그 둘을 가른다 —
+        기술 용어를 옮기지는 않되(사용자의 일이 아니다), **우리 쪽 사정임을 밝히고
+        다시 해 보라고** 말한다.
         """
+        if trouble == "open":
+            return i18n.t("I could not open the flight listing just now, so I have "
+                          "not actually looked yet. Shall I try again?")
+        if trouble == "read":
+            return i18n.t("I opened the listing but could not read the fares just "
+                          "now. Give me a moment and ask again.")
         if dropped and (trip.airline or trip.nonstop):
             if trip.airline and trip.nonstop:
                 return i18n.t("I found {count} flights, but none of them are nonstop "
@@ -1517,14 +1547,21 @@ class FlightsPlugin(Plugin):
         return i18n.t("I could not find flights for {route}. Try naming the "
                       "airports, or a different date.", route=route)
 
-    def _find(self, ctx: ToolContext, trip: Trip) -> tuple[list[Flight], int]:
+    def _find(self, ctx: ToolContext,
+              trip: Trip) -> tuple[list[Flight], int, str]:
         """항공편 목록 페이지를 **열어** 정규형으로 옮기고 **조건으로 거른다**.
 
-        돌려주는 것은 (남은 것, ★조건 때문에 버린 수★)이다 — 버린 수를 안 세면
-        *"표는 있는데 그 항공사가 없다"* 와 *"아무것도 못 찾았다"* 를 구별해서
-        말할 수 없고, 그러면 사용자는 풀 수 있는 조건을 손대지 않는다.
+        돌려주는 것은 (남은 것, ★조건 때문에 버린 수★, ★못 본 까닭★)이다.
 
-        실패는 빈 목록이다(거짓말하지 않는다).
+        ## ⚠️ ★세 번째 값이 왜 생겼나★ (Sean 지적 2026-08-23)
+
+        > *"언제까지 이렇게 근본적인 수정을 하지 않고 이렇게 처리를 해야 하는 거야?"*
+
+        브라우저가 안 떠도, 모델 한도를 넘어도, 페이지를 못 읽어도 ★사용자에게 가는
+        말은 똑같이 *"항공편을 찾을 수 없네요"* 였다★. 그러니 고장 신호가 없고,
+        사용자는 제품이 부실하다고 읽는다 — 발견자가 매번 사람이 되는 까닭이 이것이다.
+
+        이제 **못 본 것과 없는 것을 가른다**. 빈 문자열이면 진짜로 없는 것이다.
         """
         page = ctx.read_page(flights_url(trip, currency=self._currency(ctx)))
         if not page.get("ok"):
@@ -1532,14 +1569,25 @@ class FlightsPlugin(Plugin):
             # 없었나 보다"* 로 읽는다 — 브라우저가 안 뜬 것과 결과가 없는 것은 다르다.
             ctx.write_log(f"[flights] could not open the listing: "
                           f"{page.get('why') or 'unknown'}")
-            return [], 0
+            return [], 0, "open"
+        body = str(page.get("text") or "")
         try:
-            moved = ctx.think(f"{_EXTRACT}\n\nFlight results page:\n"
-                              f"{str(page.get('text') or '')[:6000]}")
+            moved = ctx.think(f"{_EXTRACT}\n\nFlight results page:\n{body[:6000]}")
         except Exception as e:
             ctx.write_log(f"[flights] could not read the page: {e}")
-            return [], 0
+            return [], 0, "read"
         flights = to_flights(_only_json(moved))
+        # ★재료를 세어 남긴다★ (Sean 지적 2026-08-23 · [[empty-hands-need-a-count]])
+        #
+        # 빈손은 두 가지 뜻이다 — *"그 노선에 표가 없다"* 와 ★*"우리가 못 봤다"*★.
+        # 사용자에게 가는 말은 둘 다 *"찾을 수 없네요"* 라서 ★기능이 죽어도 그냥
+        # 부실해 보인다★. 실제로 그 자리에서 데였다: 모델 한도를 넘어 빈 배열이
+        # 왔는데 기록에는 아무 말이 없었다.
+        ctx.write_log(f"[flights] read {len(body)} chars, {len(flights)} flights")
+        if body and not flights:
+            # ★글은 받았는데 한 편도 못 옮겼다★ — 모델 한도이거나 페이지가 바뀐
+            # 것이다. 둘 다 **우리 쪽 사정**이지 그 노선에 표가 없는 것이 아니다.
+            return [], 0, "read"
         # ★모델이 엉뚱한 노선을 섞어 오면 버린다★ 우리가 물은 곳으로 가는 것만 남긴다.
         #
         # ⚠️ ★공항 코드로 오는 것이 정상이 되었다★(2026-08-21) 목록 페이지는 목적지를
@@ -1550,7 +1598,8 @@ class FlightsPlugin(Plugin):
         # ★조건은 **우리가** 건다★ 주소에 넣는 것만으로는 안 걸린다 — 페이지는 비슷한
         # 것을 넉넉히 보여 주고, 모델은 그것을 옮기기만 한다(판정은 우리 코드다).
         kept = [f for f in on_route if matches_trip(f, trip)]
-        return kept, len(on_route) - len(kept)
+        # ★여기까지 왔으면 우리는 **봤다**★ — 빈손이면 정말로 없는 것이다(세 번째 값이 빈다)
+        return kept, len(on_route) - len(kept), ""
 
     @staticmethod
     def _currency(ctx: ToolContext) -> str:

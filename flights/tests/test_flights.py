@@ -427,12 +427,35 @@ def test_without_a_destination_it_asks():
 
 
 def test_a_page_we_could_not_open_does_not_pretend():
-    """★못 열었으면 못 열었다고 한다★ — 빈손을 *"항공편이 없다"* 로 말하지 않는다."""
+    """★못 본 것과 없는 것은 다른 말이다★ (Sean 지적 2026-08-23)
+
+    > *"그때 비행기 티켓이 넘쳐나는데 왜 없다고 하는 거야?"*
+
+    브라우저가 안 떴을 때도 *"항공편을 찾을 수 없네요"* 라고 하고 있었다. 그러면
+    사용자는 ★있는 표를 없다고 듣고, 고장인 줄 모른다★ — 발견자가 매번 사람이
+    되는 까닭이 이것이다.
+    """
     ctx = _Ctx(can_read=False)
     answer = FlightsPlugin().run(ctx, action="search", destination="Tokyo")
-    assert "could not find" in answer
-    # ★왜 못 봤는지가 기록에 남는다★ 안 남기면 다음 사람은 노선을 의심한다
+    assert "not actually looked" in answer, \
+        f"못 본 것을 '없다'로 말하고 있습니다: {answer}"
+    assert "could not find" not in answer
+    # ★왜 못 봤는지가 기록에도 남는다★ 안 남기면 다음 사람은 노선을 의심한다
     assert any("could not open the listing" in line for line in ctx.logs)
+
+
+def test_a_page_we_could_not_read_does_not_pretend_either():
+    """★열었는데 한 편도 못 옮긴 것도 우리 쪽 사정이다★
+
+    모델 한도를 넘으면 빈 배열이 온다(실사용에서 쇼핑이 그렇게 죽었다). 그것을
+    *"표가 없다"* 로 말하면 사용자는 노선을 의심하고 우리는 고장을 모른다.
+    """
+    ctx = _Ctx(extract="[]")          # 페이지는 읽혔는데 한 편도 안 나왔다
+    answer = FlightsPlugin().run(ctx, action="search", destination="Tokyo")
+    assert "could not read the fares" in answer, \
+        f"못 읽은 것을 '없다'로 말하고 있습니다: {answer}"
+    # ★재료를 세어 남긴다★ — 0이면 우리가 못 본 것이다
+    assert any("flights" in line and "read" in line for line in ctx.logs)
 
 
 def test_the_declared_actions_and_the_table_are_the_same_list():
