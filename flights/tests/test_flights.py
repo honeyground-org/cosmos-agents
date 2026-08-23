@@ -1410,3 +1410,29 @@ def test_losing_the_date_grid_does_not_lose_the_search(tmp_path):
     assert "Peach" in answer, "날짜 표를 못 열었다고 검색까지 죽었습니다"
     blocks = _screen(plugin, ctx)["blocks"]
     assert any(b["type"] == "compare" for b in blocks)
+
+
+def test_the_agent_tells_the_model_when_to_call_it():
+    """★도구가 있는 것과 모델이 그것을 고르는 것은 다른 일이다★ (2026-08-23 실사용)
+
+    첫 판의 설명은 *"항공편을 찾고 지난번과 비교하며 기억한다"* 로 시작했다. 그래서
+    Sean이 *"비행기 티켓 **값** 좀 알아봐"* 라고 했을 때 모델은 이것을 안 골랐다 —
+    `web_search`가 자기 설명에 *"the moment something comes up … prices"* 라고
+    적어 두었기 때문이다. ★웹 검색이 여섯 번 헛돌았고★ 사용자는 결국
+    *"에이전트 활용해서 알아봐 줘"* 라고 **직접 지목해야** 했다.
+
+    ⚠️ 이 검사는 낱말을 세는 약한 그물이다. 하지만 ★없으면 다음 사람이 설명을
+    *"무엇을 하는가"* 로 되돌려 놓고도 아무 일이 없다★ — 그리고 그 대가는
+    실사용에서만 드러난다(그물은 도구를 직접 부르므로 영영 초록이다).
+    """
+    said = FlightsPlugin.description.lower()
+    # 사용자가 실제로 쓰는 낱말이 들어 있는가 — 모델은 이 글로 고른다
+    for word in ("flight", "airfare", "ticket"):
+        assert word in said, f"설명에 '{word}'가 없습니다 — 모델이 이것을 못 고릅니다"
+    # ★언제 부르는지를 **먼저** 말한다★ 기억·비교는 그다음이다
+    head = said.split(".")[0]
+    assert "use this" in head, \
+        f"첫 문장이 '언제 부르는가'를 말하지 않습니다: {head[:80]}"
+    # ★웹 검색으로 가지 말라고 못 박는다★ — 그 자리가 실제로 빼앗긴 자리다
+    assert "web search" in said or "search" in said, \
+        "웹 검색과의 경계를 말하지 않습니다"

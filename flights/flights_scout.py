@@ -1326,10 +1326,25 @@ class FlightsPlugin(Plugin):
     )
     version = "0.4.0"
     author = "cosmos"
-    description = ("Searches for flights on a route and compares them with what the "
-                   "user saw last time, remembering the routes and destinations they "
-                   "are interested in, and telling them in the background when a "
-                   "fare they were watching goes down.")
+    # ★모델이 이 글을 읽고 **자기를 부를지 말지** 정한다★ (2026-08-23 실사용에서 데였다)
+    #
+    # 첫 판은 *"항공편을 찾고 지난번과 비교하며 기억한다"* 로 시작했다. 그래서 Sean이
+    # *"비행기 티켓 **값** 좀 알아봐"* 라고 했을 때 모델은 ★이것을 안 골랐다★ —
+    # `web_search`가 자기 설명에 *"the moment something comes up … **prices**"* 라고
+    # 적어 두었기 때문이다. 웹 검색이 **여섯 번** 헛돌았고, 사용자는 결국
+    # *"에이전트 활용해서 알아봐 줘"* 라고 **직접 지목해야** 했다.
+    #
+    # ★도구가 있는 것과 모델이 그것을 고르는 것은 다른 일이다.★ 그래서 첫 문장이
+    # **언제 부르는가**를 말한다 — 기억과 비교는 그다음이다.
+    description = (
+        "USE THIS for anything about flights, airfares or plane tickets -- 'how much "
+        "is a ticket to New York', 'find me a flight on the 14th', 'did that route "
+        "get cheaper'. Do not use a web search for fares: a search returns the "
+        "landing-page headline price for some unknown date, with no flight numbers "
+        "and no times, while this opens the actual flight listing.\n"
+        "It compares what it finds with what the user saw last time, remembers the "
+        "routes and dates they are interested in, checks nearby dates for a cheaper "
+        "one, and tells them in the background when a fare they were watching drops.")
     parameters = {
         "type": "OBJECT",
         "properties": {
