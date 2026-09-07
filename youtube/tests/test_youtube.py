@@ -524,7 +524,7 @@ def test_upload_walks_the_whole_wire(tmp_path, keys, monkeypatch):
         calls[url] = kw
         if url.endswith("/token"):
             return _Resp({"access_token": "AT"})
-        return _Resp(headers={"Location": "https://upload.example/session"})
+        return _Resp(headers={"Location": core._UPLOAD + "?upload_id=session"})
 
     def _put(url, **kw):
         calls[url] = kw
@@ -549,7 +549,8 @@ def test_upload_walks_the_whole_wire(tmp_path, keys, monkeypatch):
     assert start["headers"]["Authorization"] == "Bearer AT"
     assert start["params"]["uploadType"] == "resumable"
     # ③ 파일은 그 자리로 갔다
-    assert "https://upload.example/session" in calls
+    assert core._UPLOAD + "?upload_id=session" in calls
+    assert calls[core._UPLOAD + "?upload_id=session"]["allow_redirects"] is False
     # ④ 답이 무슨 일이 일어났는지 말한다 — 공개면 공개라고
     assert "ddddddddddd" in answer and "public" in answer
     assert "anyone with the link" in answer
@@ -578,7 +579,7 @@ def test_the_privacy_that_goes_on_the_wire_is_the_one_we_decided(tmp_path, keys,
         if url.endswith("/token"):
             return _Resp({"access_token": "AT"})
         seen["body"] = json.loads(kw["data"])
-        return _Resp(headers={"Location": "https://upload.example/s"})
+        return _Resp(headers={"Location": core._UPLOAD + "?upload_id=s"})
 
     monkeypatch.setattr(requests, "post", _post)
     monkeypatch.setattr(requests, "put", lambda url, **kw: _Resp({"id": "ddddddddddd"}))
@@ -630,7 +631,8 @@ def test_network_trouble_is_reported_as_itself(tmp_path, keys, monkeypatch):
 
     monkeypatch.setattr(plugin, "_api", _boom)
     answer = plugin.run(_Ctx(tmp_path), action="search", query="x")
-    assert "Could not reach YouTube" in answer and "connection reset" in answer
+    assert "Could not reach YouTube" in answer and "Check" in answer
+    assert "connection reset" not in answer  # HTTP 오류 원문에는 비밀 URL이 섞일 수 있다.
 
 
 def test_the_agent_asks_the_vault_with_its_own_name(tmp_path, keys, monkeypatch):

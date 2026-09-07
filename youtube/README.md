@@ -29,8 +29,9 @@ This keeps that part.
 
 ## How it works
 
-It implements the Cosmos `plugin/v1` contract as a single file
-(`youtube_scout.py`) with its translations alongside (`youtube_i18n.py`).
+It implements the Cosmos `plugin/v1` contract. The agent, translations and
+dedicated HTML workspace ship together in this folder. Cosmos 0.3.0 or later
+supports the interactive workspace; older cores retain the read-only view.
 
 Reading and uploading both go through the YouTube Data API. Reading accepts
 either an OAuth token or an API key, so the Connect button is enough; the API
@@ -69,15 +70,20 @@ any of them.
   event; a taste needs repetition.
 - **It does not publish anything you did not ask it to publish**, and it never
   widens privacy on its own.
-- **It does not claim to have watched a video.** YouTube does not hand out
-  captions through the API, so when it summarizes it says plainly that it is
+- **It does not claim to have watched a video.** This agent does not retrieve
+  captions, so when it summarizes it says plainly that it is
   working from the title and description — and when there is no description it
   says it cannot summarize rather than inventing one.
 
 ## Data and privacy
 
-**Stays on your machine.** Your uploads (title, tags, privacy, when), and which
-channels you come back to, live in your Cosmos brain on your own disk.
+**Saved in your Cosmos account.** Uploads (title, tags, privacy, when), explicit
+lookups and opening requests use your configured Cosmos brain. Local installations
+use local storage; hosted accounts use their configured service storage.
+The latest search or summary replaces the previous workspace results in user-scoped
+agent state, not an interest graph. Opening a URL is never recorded as watching.
+Repeated channel lookups count distinct videos per day, not repeated details/summary
+calls for the same video. This is not a watch-time or preference score.
 
 **Leaves your machine:** what you ask it to search for, and the video's title
 and description when you ask for a summary (sent to the model you configured).
@@ -94,11 +100,38 @@ Ask *"what have I uploaded?"* to see everything it kept.
 - **Search quota is shared** when you use the Connect button, because the app
   registration is ours. Heavy users can paste their own API key in the settings
   and spend their own quota instead.
-- **Summaries come from the title and description only.** There are no captions
-  available through the API, so a video whose description says nothing cannot be
+- **Summaries come from the title and description only.** Captions are not
+  retrieved by this agent, so a video whose description says nothing cannot be
   summarized — and it will say so rather than guess.
 - **It reads your own uploads from what it recorded**, not from YouTube. Videos
   you published some other way are not in the list.
+- **An interrupted upload has an uncertain outcome.** Check the YouTube channel
+  before retrying. Automatic resumable-session recovery is not implemented.
+- **Permissions are currently agent-wide in Cosmos.** Disabling a declared
+  capability can block the whole agent, including read actions. Action-specific
+  publishing permission separation remains follow-up work.
+
+## Interactive workspace
+
+On Cosmos 0.3.0+, open this agent's view in the main screen or its own window.
+The publication timeline stays beside a reference desk: search, select a video,
+load details, summarize its description or open it through Cosmos's browser tool.
+The view reads stored results without making background YouTube API calls. State
+updates preserve your search draft. Motion follows reduced-motion preferences.
+Uploads are requested in Cosmos chat with a file, title and privacy; the workspace
+does not automatically publish or imply that a summary used the video's content.
+
+YouTube's captions API exists, but downloading a track requires authorization and
+sufficient permissions: [official reference](https://developers.google.com/youtube/v3/docs/captions/download).
+
+## Development verification
+
+Use a temporary `COSMOS_HOME` for tests; do not point it at a real user's data.
+Run `python -m pytest youtube/tests -q` from the parent repository. For UI checks,
+run `python youtube/scripts/preview_workspace.py` and then
+`node youtube/scripts/check_workspace_ui.mjs` with Playwright installed (or set
+`YOUTUBE_PLAYWRIGHT_MODULE` to its module path). The preview uses synthetic data,
+the real Cosmos renderer/CSP and isolated storage; it cannot publish a video.
 
 ## Setup
 

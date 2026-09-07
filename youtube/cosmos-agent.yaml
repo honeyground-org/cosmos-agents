@@ -6,22 +6,21 @@
 # fall back to English when one is missing.
 id: honeyground-org/youtube
 type: feature
-version: 0.3.1
+version: 0.4.0
 contract: plugin/v1
 title: YouTube
 # ★설치 화면은 코드를 받기 **전에** 그려진다★ — 그래서 무엇을 기억하는지가 여기
 # 없으면 사용자는 설치한 뒤에야 그것을 알게 된다.
 description: >-
-  For people who publish, not just watch. It keeps your own uploads -- the
-  titles, the tags, when each one went out -- and hands them back the next time
-  you publish, so a channel stops being a pile of things you half remember. Its
-  screen is your channel: what you put out, who can see each one, and how long
-  it has been since the last one. It never turns a video title into a fact about
-  you: a title is what someone wrote to get a click that afternoon. What it does
-  keep, on the watching side, is the channel you keep coming back to -- and only
-  after you actually come back, because once is an event and twice is a taste.
-  One click connects your account for both searching and uploading; nothing has
-  to be pasted anywhere.
+  A creator's channel and reference workspace. Keeps your recorded uploads,
+  titles, tags and privacy for the next publishing decision. On Cosmos 0.3.0 or
+  later, search, select, inspect and summarize references beside your publication
+  history. Latest results are private user-scoped working state, not inferred
+  interests. Explicit lookups and opening requests use Cosmos memory; opening
+  never means a video was watched. Summaries use only titles and descriptions,
+  not video content or captions. Connect Google in agent settings; an API key
+  is optional for reading. Uploads require an explicit request and publishing
+  permission. The view is not a live synchronization of your YouTube channel.
 author: honeyground-org
 license: MIT
 homepage: https://github.com/honeyground-org/cosmos-agents/tree/main/youtube
@@ -39,4 +38,8 @@ capabilities:
   - browser
   - media.publish
   - memory
+brain:
+  stores: [item, org]
+  reads: [item, org]
+  settled: "Recorded uploads and explicit channel lookups support future publishing decisions. Search lists remain user-scoped working state; video titles are not inferred interests and opening requests are not verified watching."
 requires_desktop: false
