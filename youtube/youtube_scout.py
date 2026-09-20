@@ -43,6 +43,7 @@ from cosmos.contracts import Plugin, ToolContext
 from cosmos.contracts.memory import (Entity, MemoryItem, Relation, Trust,
                                      entity_links, now_ts)
 import youtube_i18n as i18n
+import youtube_viewer
 from cosmos.core import provenance
 
 
@@ -103,19 +104,27 @@ _UPLOAD_TIMEOUT = 600
 # *"둘 다 있어야 한다"* 가 되어, ★버튼을 누른 사람이 키까지 넣어야★ 하고 그러면
 # 원클릭이 아니다. 뜻이 다른 두 관계를 한 칸에 뭉치면 반드시 한쪽이 틀린다.
 ACTIONS: dict[str, dict] = {
+    "layout": {"needs": (), "remembers": False, "capabilities": ("memory",),
+               "desc": "choose channel workspace or focused reference research"},
     "search":    {"needs": (), "needs_any": ("api_key", "google"), "remembers": False,
+                  "capabilities": ("network", "memory"),
                   "desc": "look for videos"},
     "info":      {"needs": (), "needs_any": ("api_key", "google"), "remembers": True,
+                  "capabilities": ("network", "memory"),
                   "desc": "what one video is"},
     "summarize": {"needs": (), "needs_any": ("api_key", "google"), "remembers": True,
+                  "capabilities": ("network", "memory"),
                   "desc": "sum a video up"},
     "trending":  {"needs": (), "needs_any": ("api_key", "google"), "remembers": False,
+                  "capabilities": ("network", "memory"),
                   "desc": "what is popular right now"},
     "play":      {"needs": (), "remembers": True,
+                  "capabilities": ("network", "browser", "memory"),
                   "desc": "open it in the browser"},
     # ★필요한 것이 **하나**로 줄었다★(Phase OA) — 사용자가 구글 클라우드에서
     # 세 값을 복사해 오던 자리가 버튼 하나가 됐다.
     "upload":    {"needs": ("google",), "remembers": True,
+                  "capabilities": ("network", "media.publish", "memory"),
                   "desc": "put your own video up"},
 }
 DEFAULT_ACTION = "search"
@@ -154,6 +163,7 @@ class Video:
     # (지금 몇 회) 남기면 곧 거짓이 된다 — 그 구별을 `remember_video`가 한다.
     views: int = 0
     tags: tuple[str, ...] = ()
+    thumbnail: str = ""
 
     @property
     def url(self) -> str:
@@ -305,11 +315,29 @@ def normalize(payload) -> list[Video]:
             channel=str(snippet.get("channelTitle") or ""),
             channel_id=str(snippet.get("channelId") or ""),
             published=str(snippet.get("publishedAt") or ""),
+            thumbnail=_thumbnail_url(snippet),
             description=str(snippet.get("description") or ""),
             views=_as_int(stats.get("viewCount")),
             tags=tuple(str(t) for t in (snippet.get("tags") or ())[:20]),
         ))
     return out[:MAX_RESULTS]
+
+
+def _thumbnail_url(snippet):
+    from urllib.parse import urlsplit
+    thumbs = snippet.get("thumbnails")
+    if not isinstance(thumbs, dict):
+        return ""
+    for size in ("medium", "high", "default"):
+        row = thumbs.get(size)
+        url = str(row.get("url", "")) if isinstance(row, dict) else ""
+        try:
+            parts = urlsplit(url)
+            if parts.scheme == "https" and parts.hostname and not parts.username and not parts.password:
+                return url
+        except ValueError:
+            continue
+    return ""
 
 
 def _as_int(value) -> int:
@@ -726,7 +754,7 @@ class YouTubePlugin(Plugin):
         "What is this video about?",
         "Upload that clip to my channel as unlisted",
     )
-    version = "0.4.0"
+    version = "0.4.1"
     author = "cosmos"
     description = ("Searches YouTube, describes or summarizes a video, lists what is "
                    "trending, opens a video in the browser, and uploads a video file "
@@ -734,6 +762,7 @@ class YouTubePlugin(Plugin):
     parameters = {
         "type": "OBJECT",
         "properties": {
+            "view_mode": {"type": "STRING", "description": "For layout: channel or research."},
             "action": {"type": "STRING",
                        "description": " | ".join(f"{k} — {v['desc']}"
                                                  for k, v in ACTIONS.items())},
@@ -755,7 +784,10 @@ class YouTubePlugin(Plugin):
     # ★`media.publish`가 여기 있는 이유★ 나머지는 남의 것을 읽는 역량이고 이것만
     # **내 이름으로 세상에 내놓는** 역량이다. 설치 화면에서 사용자는 그 한 줄을 보고
     # 승인한다 — 역량이 없으면 그 고지도 없다.
-    capabilities = ["network", "browser", "media.publish", "memory"]
+    action_capabilities = {name: list(spec["capabilities"]) for name, spec in ACTIONS.items()}
+    capabilities = sorted({cap for spec in ACTIONS.values() for cap in spec["capabilities"]})
+    default_action = DEFAULT_ACTION
+    view_capabilities = ["memory"]
     requires_desktop = False
     # ★화면 이름★ — 마켓 카드의 `title`과 다른 자리다(이쪽은 열었을 때의 제목)
     view_title = "My channel"
@@ -767,7 +799,7 @@ class YouTubePlugin(Plugin):
     # 며칠에 한 번 들여다보고, 그동안 코스모스와는 다른 이야기를 한다. 그래서
     # 자기 창을 열 수 있다고 말한다 — ★고르는 것은 사용자다★(둘 다 적었으므로
     # 설정에 라디오 둘이 뜨고, 안 고르면 지금까지처럼 화면 안이다).
-    space = ("screen", "window")
+    space = ("screen", "window", "browser")
 
     # ★열쇠는 금고로 직행한다★ 파일에 남기면 그 순간 저장소에 커밋되고, 화면으로
     # 내려보내면 응답·기록·스크린샷에 실린다. 돌아오는 것은 마스킹뿐이다.
@@ -863,15 +895,18 @@ class YouTubePlugin(Plugin):
         # 신형 계약은 에이전트 소유 HTML + 사용자별 JSON 상태를 나눠 갱신한다.
         # 구형 코어에서는 기존 읽기 화면을 유지한다. 상태를 공유 파일에 쓰지 않는다.
         if callable(getattr(ctx, "load_agent_state", None)):
-            from youtube_viewer import block
             if line := self._connect_line(ctx):
                 blocks.append({"type": "text", "tone": "warn", "text": line})
             try:
                 latest = ctx.load_agent_state(self.name, "workspace")
+                preferences = ctx.load_agent_state(self.name, "presentation") or {}
                 warning = ""
             except Exception:
-                latest, warning = {}, "Saved results could not be read. Try reopening this view."
-            blocks.append(block(state, latest, lang=getattr(ctx, "lang", "en"),
+                latest, preferences, warning = {}, {}, "Saved results could not be read. Try reopening this view."
+            if not isinstance(preferences, dict):
+                preferences = {}
+            blocks.append(youtube_viewer.block(state, latest,
+                                view_mode=preferences.get("view_mode", "channel"), lang=getattr(ctx, "lang", "en"),
                                 warning=warning, memory_available=memory_available))
             return {"title": self.view_title, "blocks": blocks, "refresh_ms": 5000}
 
@@ -917,9 +952,9 @@ class YouTubePlugin(Plugin):
             have = self._have(ctx)
         except Exception:
             return ""
-        if not missing_for("upload", have):
+        if not missing_for("search", have):
             return ""
-        return self._ask_for_keys("upload", missing_for("upload", have))
+        return self._ask_for_keys("search", missing_for("search", have))
 
     # -- 라우팅 ---------------------------------------------------------------
     def run(self, ctx: ToolContext, **args) -> str:
@@ -929,8 +964,20 @@ class YouTubePlugin(Plugin):
             # ★모르는 낱말이면 짐작한다 — 다만 안전한 쪽으로★ 파일이 딸려 왔다고
             # 업로드로 읽지 않는다. 올리는 것은 **말한 대로만** 한다.
             action = DEFAULT_ACTION
+        # 새 코어에서는 권한 판정과 같은 정규형. 구형 코어는 기존 전체 권한 차단을 유지한다.
+        if hasattr(self, "action_for"):
+            action = self.action_for(args)
         try:
             _user(ctx)
+            if action == "layout":
+                mode = args.get("view_mode")
+                if mode not in ("channel", "research"):
+                    return youtube_viewer.copy_for(getattr(ctx, "lang", "en"))["layout_invalid"]
+                try:
+                    ctx.save_agent_state(self.name, {"view_mode": mode}, key="presentation")
+                except Exception:
+                    return youtube_viewer.copy_for(getattr(ctx, "lang", "en"))["layout_error"]
+                return youtube_viewer.copy_for(getattr(ctx, "lang", "en"))["layout_saved"]
             missing = missing_for(action, self._have(ctx))
             if missing:
                 return self._ask_for_keys(action, missing)
@@ -1078,10 +1125,20 @@ class YouTubePlugin(Plugin):
         """검색 전체는 성향 기억이 아닌 교체 가능한 작업 결과다. 실패도 사용자에게 알린다."""
         if not callable(getattr(ctx, "save_agent_state", None)):
             return "\nUpdate Cosmos to keep these results in the interactive YouTube view."
+        prepare = getattr(ctx, "prepare_agent_images", None)
+        try:
+            images = prepare([v.thumbnail for v in videos]) if callable(prepare) else {}
+        except Exception:
+            images = {}  # Optional pictures must not discard verified video metadata.
+        from cosmos.core import permissions, capabilities, userstate
+        with userstate.scope(_user(ctx)):
+            if not capabilities.is_allowed(self, args={"action": action},
+                                           blocked_capabilities=permissions.effective_blocked()):
+                return "\nResults were not saved because access changed."
         result = {"action": action, "query": str(query)[:300], "updated_at": now_ts(),
                   "summary": str(summary)[:6000], "videos": [
                       {"id": v.video_id, "title": v.title[:300], "channel": v.channel[:150],
-                       "description": v.description[:1000], "url": v.url}
+                       "description": v.description[:1000], "url": v.url, "image": images.get(v.thumbnail, "")}
                       for v in videos[:MAX_RESULTS]]}
         try:
             ctx.save_agent_state(self.name, result, "workspace")
@@ -1264,6 +1321,10 @@ class YouTubePlugin(Plugin):
     # -- 브레인 ---------------------------------------------------------------
     def _remember(self, ctx: ToolContext, video, *, watched: bool) -> str:
         """★기억은 부산물이다★ 실패해도 도구는 자기 답을 그대로 낸다."""
+        from cosmos.core import permissions, userstate
+        with userstate.scope(_user(ctx)):
+            if "memory" in permissions.effective_blocked():
+                return "\nMemory access is off; this lookup was not remembered."
         brain = getattr(ctx, "brain", None)
         if brain is None:
             return "\nMemory is unavailable; this lookup was not remembered."

@@ -119,12 +119,12 @@ def test_a_broken_search_does_not_pretend(tmp_path):
             raise RuntimeError("검색이 죽었다")
 
     out = _Boom(tmp_path) and ShoppingPlugin().run(_Boom(tmp_path), query="이어폰")
-    assert "could not find" in out.lower()
+    assert "unavailable" in out.lower()
 
 
 def test_a_model_that_returns_garbage_does_not_crash_the_agent(tmp_path):
     ctx = _Ctx(tmp_path, search="결과 있음", extract="이건 JSON이 아닙니다")
-    assert "could not find" in ShoppingPlugin().run(ctx, query="이어폰").lower()
+    assert "could not be read" in ShoppingPlugin().run(ctx, query="이어폰").lower()
 
 
 def test_an_invented_price_is_not_accepted():

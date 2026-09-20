@@ -5,6 +5,17 @@ from pathlib import Path
 # 영어 원문이 기본. 동작/안내를 에이전트와 함께 배포한다.
 LANGS = ("en", "ko", "ja", "de", "es", "fr")
 COPY = {
+    'research_title': ('Your next watch, at a glance.', '다음에 볼 영상, 한눈에.', '次に見る動画を、ひと目で。', 'Das nächste Video auf einen Blick.', 'Tu próximo vídeo, de un vistazo.', 'Votre prochaine vidéo, en un regard.'),
+    'research_intro': ('Compare references and read their descriptions before choosing what to watch.', '참고 영상을 비교하고 설명을 살펴보며 볼 영상을 고르세요.', '参考動画を比較し、説明を読んで見る動画を選びましょう。', 'Referenzen vergleichen und Beschreibungen lesen, bevor Sie ein Video wählen.', 'Compara referencias y lee sus descripciones antes de elegir qué ver.', 'Comparez les références et lisez leurs descriptions avant de choisir.'),
+
+    'layout': ('Workspace', '화면 구성', 'ワークスペース', 'Arbeitsbereich', 'Espacio de trabajo', 'Espace de travail'),
+    'layout_channel': ('Channel & references', '채널과 참고 영상', 'チャンネルと参考動画', 'Kanal und Referenzen', 'Canal y referencias', 'Chaîne et références'),
+    'layout_research': ('Focus on research', '탐색에 집중', '検索に集中', 'Recherche im Fokus', 'Centrarse en explorar', 'Se concentrer sur la recherche'),
+    'layout_saved': ('Workspace saved.', '화면 구성을 저장했습니다.', '画面構成を保存しました。', 'Arbeitsbereich gespeichert.', 'Espacio de trabajo guardado.', 'Espace de travail enregistré.'),
+    'layout_invalid': ('Choose channel or research.', '채널 또는 탐색 화면을 선택해 주세요.', 'チャンネルか検索を選択してください。', 'Kanal oder Recherche wählen.', 'Elige canal o exploración.', 'Choisissez chaîne ou recherche.'),
+    'layout_error': ('Workspace could not be saved. Try again.', '화면 구성을 저장하지 못했습니다. 다시 시도해 주세요.', '画面構成を保存できませんでした。再試行してください。', 'Arbeitsbereich konnte nicht gespeichert werden. Erneut versuchen.', 'No se pudo guardar el espacio. Inténtalo de nuevo.', 'Impossible d’enregistrer cet espace. Réessayez.'),
+    'back_results': ('Back to results', '결과로 돌아가기', '結果に戻る', 'Zurück zu Ergebnissen', 'Volver a resultados', 'Retour aux résultats'),
+
     "title": ("Your channel, in context", "맥락이 쌓이는 내 채널", "文脈がつながる自分のチャンネル", "Ihr Kanal im Kontext", "Tu canal, en contexto", "Votre chaîne, en contexte"),
     "intro": ("Review what you published. Explore what to make next.", "올린 영상을 돌아보고, 다음 콘텐츠의 실마리를 찾아보세요.", "公開した動画を振り返り、次の制作を探りましょう。", "Veröffentlichungen ansehen und neue Ideen erkunden.", "Revisa lo publicado y explora qué crear después.", "Retrouvez vos publications et explorez vos prochaines idées."),
     "channel": ("My publications", "내 업로드 이력", "自分の公開履歴", "Meine Veröffentlichungen", "Mis publicaciones", "Mes publications"),
@@ -37,13 +48,20 @@ COPY = {
     "privacy": ("Latest results stay in your Cosmos account until replaced. Explicit lookups and uploads use your brain. Opening is not recorded as watching.", "최근 결과는 다음 결과로 교체될 때까지 내 코스모스 계정에 보관됩니다. 명시적인 조회와 업로드는 브레인에 기억합니다. 열기를 시청으로 기록하지 않습니다.", "最新結果は次の結果で置き換わるまでCosmosアカウントに保存されます。明示的な照会とアップロードは記憶されます。開くだけでは視聴扱いになりません。", "Letzte Ergebnisse bleiben bis zum Ersetzen im Cosmos-Konto. Gezielte Aufrufe und Uploads nutzen das Gedächtnis. Öffnen zählt nicht als Anschauen.", "Los últimos resultados se conservan en tu cuenta Cosmos hasta reemplazarse. Las consultas explícitas y subidas usan la memoria. Abrir no cuenta como ver.", "Les derniers résultats restent dans votre compte Cosmos jusqu’à leur remplacement. Les consultations explicites et envois utilisent la mémoire. Ouvrir ne signifie pas regarder."),
 }
 
+COPY.update({'activity': ('Recorded publishing activity', '기록된 게시 활동', '記録された公開活動', 'Erfasste Veröffentlichungen', 'Actividad de publicación registrada', 'Activité de publication enregistrée'), 'activity_help': ('Counts from the latest 12 recorded uploads. Not views or channel performance.', '최근 기록된 업로드 12개 기준입니다. 조회수나 채널 성과가 아닙니다.', '直近12件のアップロード記録。再生数やチャンネル成果ではありません。', 'Die letzten 12 erfassten Uploads, keine Aufrufe oder Kanal-Leistung.', 'Últimas 12 subidas registradas, no vistas ni rendimiento del canal.', 'Les 12 derniers envois enregistrés, pas les vues ni les performances.'), 'no_image': ('Thumbnail unavailable', '썸네일 없음', 'サムネイルなし', 'Kein Vorschaubild', 'Miniatura no disponible', 'Miniature indisponible'), 'pause': ('Pause motion', '움직임 멈추기', '動きを停止', 'Bewegung pausieren', 'Pausar movimiento', 'Suspendre les animations'), 'motion': ('Enable motion', '움직임 켜기', '動きを有効に', 'Bewegung aktivieren', 'Activar movimiento', 'Activer les animations')})
+
 
 @lru_cache(maxsize=1)
 def html():
     return (Path(__file__).parent / "views/workspace.html").read_text(encoding="utf-8")
 
 
-def block(channel, latest, *, lang="en", warning="", memory_available=True):
+def copy_for(lang):
+    index = LANGS.index(lang) if lang in LANGS else 0
+    return {key: row[index] for key, row in COPY.items()}
+
+
+def block(channel, latest, *, lang="en", warning="", memory_available=True, view_mode="channel"):
     index = LANGS.index(lang) if lang in LANGS else 0
     copy = {key: row[index] for key, row in COPY.items()}
     # 코어의 JSON 상태 한도를 넘지 않도록 긴 API/기억 자료는 표시할 양만 보낸다.
@@ -57,11 +75,12 @@ def block(channel, latest, *, lang="en", warning="", memory_available=True):
               "updated_at": str(latest.get("updated_at", ""))[:32],
               "summary": str(latest.get("summary", ""))[:4000],
               "videos": [{key: str(row.get(key, ""))[:limit] for key, limit in
-                          (("id", 11), ("title", 300), ("channel", 150), ("description", 700))}
+                          (("id", 11), ("title", 300), ("channel", 150), ("description", 700), ("image", 8192))}
                          for row in (latest.get("videos") or [])[:8] if isinstance(row, dict)]}
     return {"type": "html", "key": "youtube-workspace-v1", "label": copy["title"],
             "height": 1060, "html": html(), "state": {
                 "lang": lang, "copy": copy, "uploads": uploads,
+                "view_mode": view_mode if view_mode in ("channel", "research") else "channel",
                 "regulars": [{"channel": str(r["channel"])[:120], "count": int(r["count"])}
                              for r in channel["regulars"][:8]], "latest": latest,
                 "warning": warning or ("" if memory_available else copy["memory"]),

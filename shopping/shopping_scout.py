@@ -15,17 +15,8 @@
 ★음성으로는 **상위 둘까지**만 말한다★ 목록을 읽어 주는 것은 도움이 아니라 소음이고,
 사람은 넷째 항목쯤에서 앞을 잊는다. **비교는 화면이 한다**(`view()`).
 
-★그리고 그 화면은 **선언 블록**으로 그린다★(2026-08-18에 되돌렸다)
-
-AS-6에서 이 화면은 HTML을 통째로 만들어 액자(`iframe sandbox`)에 넣었다. Sean의
-요구(*"모든 결과물은 html로 만들어서 새롭게 보여주길"*)를 그렇게 읽었는데, 요구의
-목적은 *"HTML이라는 기술"* 이 아니라 **결과가 한 화면에서 읽히고 거기서 결정까지
-가는 것**이었다. 그리고 그 목적을 위한 어휘는 **이미 있었다** — `compare`·
-`price_history`는 계약에도 있고 셸도 그릴 줄 안다. 우리 것을 남의 방식으로 그리며
-값을 셋 치렀다: 디자인 토큰이 안 닿고, 계측기가 못 찍고, 쪽 넘김이 어려웠다.
-
-⚠️ `html` 블록을 **없앤 것이 아니다** — 마켓에서 받은 남의 에이전트는 우리 어휘
-밖의 화면을 그려야 하고, 그때 격리가 필요하다. 쇼핑은 우리 것이라 우리 어휘로 그린다.
+새 코어에서는 고정 HTML과 사용자별 JSON 상태로 전용 비교 화면을 갱신한다.
+구형 컨텍스트에는 기존 선언 블록을 유지한다.
 
 ## 결제로 이어진다 — ★단, 마지막 버튼은 사람이 누른다★ (AS-7)
 
@@ -38,14 +29,17 @@ AS-6에서 이 화면은 HTML을 통째로 만들어 액자(`iframe sandbox`)에
 
 ## 판정은 코어가 한다
 
-순위·가격 변동·신뢰 신호는 전부 `cosmos/core/shopping.py`에 있다. 여기서 다시
+순위·가격 변동·신뢰 신호는 전부 `shopping_core.py`에 있다. 여기서 다시
 판정하면 **화면과 말이 서로 다른 것을 말하게 된다** — 연동 화면에서 이미 겪은 실패다.
 """
 from __future__ import annotations
 
 import json
+from hashlib import sha256
+from uuid import uuid4
 
 import shopping_i18n as i18n
+import shopping_viewer  # Load sibling view code while the installer owns the import path.
 from cosmos.contracts import Plugin, ToolContext
 from shopping_core import (
     Candidate, MAX_KEPT, MIGRATION_MARK_FILE, OUTCOMES, PAGE_SIZE, TRUST_SIGNALS,
@@ -75,7 +69,7 @@ _EXTRACT = (
 
 class ShoppingPlugin(Plugin):
     name = "shopping"
-    version = "1.1.2"
+    version = "1.2.0"
     author = "cosmos"
     # 🛒 마켓에 실린다(A1). `view_title`은 **화면 제목**이고 이쪽은 **마켓 이름**이다.
     title = "Shopping scout"
@@ -125,7 +119,7 @@ class ShoppingPlugin(Plugin):
                       "description": "What the user wants to buy, in their words. "
                                      "Needed to search."},
             "action": {"type": "STRING",
-                       "description": "search (default) — look for it now. "
+                       "description": "settings — change price-check preferences without searching. search (default) — look for it now. "
                                       "next — show the next few from the list already "
                                       "on screen (use this whenever the user asks to "
                                       "see more, the next ones, or others). "
@@ -138,6 +132,10 @@ class ShoppingPlugin(Plugin):
                                       "after all. "
                                       "still_looking — they have not bought it yet; undo "
                                       "either of those two."},
+            "preferences": {"type": "OBJECT", "description": "For settings: price_checks (boolean), check_hours (6, 12, 24, 72), drop_percent (7, 10, 15, 20)."},
+            "preferences_revision": {"type": "STRING", "description": "Revision of the settings being edited."},
+            "criteria": {"type": "STRING", "description": "Explicit criteria for this buying decision only. Omit to reuse; empty clears."},
+            "revision": {"type": "STRING", "description": "Comparison revision from the view; rejects stale selections."},
             "index": {"type": "INTEGER",
                       "description": "Which candidate from the last comparison "
                                      "(1 = the recommended one). For checkout and open."},
@@ -147,6 +145,15 @@ class ShoppingPlugin(Plugin):
     # ★`memory`가 있는 이유★ 쇼핑 의도를 **브레인에** 남긴다 — 에이전트 안에 두면
     # 다른 경로에서 "요즘 뭐 사려고 했지?"에 답할 수 없다.
     capabilities = ["network", "memory", "shopping.search"]
+    action_capabilities = {
+        "search": ["network", "memory", "shopping.search"],
+        **{action: ["memory"] for action in
+           ("next", "prev", "open", "checkout", "bought", "dropped", "still_looking", "settings")},
+    }
+    default_action = "search"
+    view_capabilities = ["memory"]
+    settings_at = {"_tab": "settings"}
+    # Browser/wallet handoffs retain the called tool's own permission checks.
     requires_desktop = False
     view_title = "Shopping"
     # ★이 화면의 성격★(Sean 요구 2026-08-19) 후보를 나란히 놓고 **값과 신호로**
@@ -202,10 +209,36 @@ class ShoppingPlugin(Plugin):
 
     def __init__(self) -> None:
         # 이 과정에서 띄워 둔 알림 — 내릴 때 무엇을 내릴지 알아야 한다
-        self._raised: set[str] = set()
+        self._raised: dict[str, set[str]] = {}
 
     def run(self, ctx: ToolContext, **args) -> str:
-        action = str(args.get("action") or "search").strip().lower()
+        try:
+            _user(ctx)
+            if args.get("revision") and args["revision"] != _load(ctx).get("revision"):
+                return i18n.t("The comparison changed. Select the item again.")
+            return self._run(ctx, **args)
+        except ShoppingError as error:
+            return str(error)
+        except Exception as error:
+            ctx.write_log(f"[shopping] action failed ({type(error).__name__})")
+            return i18n.t("Shopping is unavailable. Try again shortly.")
+
+    def _run(self, ctx: ToolContext, **args) -> str:
+        action = self.action_for(args) if hasattr(self, "action_for") else str(args.get("action") or "search").strip().lower()
+        if action == "settings":
+            current = _preferences(ctx)
+            if args.get("preferences_revision") and args["preferences_revision"] != current["revision"]:
+                return _setting_text(ctx, "settings_stale")
+            values = args.get("preferences")
+            if not isinstance(values, dict) or set(values) != {"price_checks", "check_hours", "drop_percent"}:
+                return _setting_text(ctx, "settings_invalid")
+            if type(values["price_checks"]) is not bool or type(values["check_hours"]) is not int or type(values["drop_percent"]) is not int or values["check_hours"] not in (6, 12, 24, 72) or values["drop_percent"] not in (7, 10, 15, 20):
+                return _setting_text(ctx, "settings_invalid")
+            ctx.save_agent_state(self.name, values, key="preferences")
+            if not values["price_checks"]:
+                for key in list(self._raised.get(_user(ctx), set())):
+                    self._clear(ctx, key)
+            return _setting_text(ctx, "settings_saved")
         if action in self._PAGE_ACTIONS:
             return self._turn_page(ctx, action)
         if action in self._OUTCOME_ACTIONS:
@@ -217,32 +250,40 @@ class ShoppingPlugin(Plugin):
             return i18n.t("Tell me what to look for.")
         ctx.write_log(f"[shopping] {query}")
 
-        brain, uid = ctx.brain, getattr(ctx, "user_id", "local")
+        brain, uid = ctx.brain, _user(ctx)
         # ★옛 후보를 한 번 옮긴다★ 예전에는 `remember_search` 안에서 불렀는데, 표시를
         # 둘 자리(우리 폴더)를 아는 것은 **여기**뿐이다. 멱등이라 매번 불러도 된다.
         if brain is not None:
             try:
                 migrate_products_once(brain, uid,
-                                      ctx.data_dir(self.name) / MIGRATION_MARK_FILE)
+                                      ctx.data_dir(self.name) / (MIGRATION_MARK_FILE + "." + sha256(uid.encode()).hexdigest()))
             except Exception as e:
                 ctx.write_log("[shopping] " + i18n.t(
-                    "Could not tidy old candidates: {detail}", detail=e))
-        past = recall_search(brain, uid, query) if brain else {}
-        candidates = rank(self._find(ctx, query))
+                    "Could not tidy old candidates: {detail}", detail=type(e).__name__))
+        try:
+            past = recall_search(brain, uid, query) if brain else {}
+        except Exception:
+            raise ShoppingError(i18n.t("Memory is unavailable. Try again before searching."))
+        criteria = str(args.get("criteria", past.get("criteria", "")) or "").strip()[:500]
+        try:
+            candidates = rank(self._find(ctx, query + (" — " + criteria if criteria else "")))
+        except ShoppingError as error:
+            return self._notice(ctx, _load(ctx), str(error))
         if not candidates:
             # ★못 찾았으면 그렇다고 말한다★ 빈 목록에 그럴듯한 말을 붙이면
             # 사용자는 "그런 물건이 없다"로 읽는다.
-            return i18n.t("I could not find '{query}'. Could you say it a little "
-                          "differently?", query=query)
+            _save(ctx, {"query": query, "criteria": criteria, "items": [], "page": 0, "revision": uuid4().hex})
+            return self._notice(ctx, _load(ctx), i18n.t("I could not find '{query}'. Could you say it a little "
+                          "differently?", query=query))
 
         if brain:
             # ★`self`를 넘긴다★(R4) 산출물이 **누가 찾아 온 것인지** 가리킨다.
             # 자기 서술(`title`·`summary`·`category`·`capabilities`)은 이미 이 클래스에
             # 선언돼 있으므로, 코어가 그것을 읽어 그래프에 세운다 — 새 에이전트가
             # 마켓에서 설치돼도 코드 수정이 0이다.
-            remember_search(brain, uid, query, candidates, agent=self)
+            remember_search(brain, uid, query, candidates, agent=self, criteria=criteria)
         diff = compare_with_past(past, candidates)
-        self._remember_view(ctx, query, candidates, past, diff)
+        self._remember_view(ctx, query, candidates, {**past, "criteria": criteria}, diff)
         return self._say(query, candidates, diff)
 
     def _find(self, ctx: ToolContext, query: str) -> list[Candidate]:
@@ -254,17 +295,21 @@ class ShoppingPlugin(Plugin):
             raw = ctx.run_tool("web_search", {"query": f"{query} {terms}"})
         except Exception as e:
             ctx.write_log("[shopping] " + i18n.t(
-                "Search failed: {detail}", detail=e))
-            return []
+                "Search failed: {detail}", detail=type(e).__name__))
+            raise ShoppingError(i18n.t("Search is unavailable. Previous results are still shown."))
         if not raw or not str(raw).strip():
             return []
         try:
             text = ctx.think(f"{_EXTRACT}\n\n---\n{str(raw)[:6000]}", fast=True)
+            if "[" not in str(text):
+                raise ValueError("Missing candidate array")
             rows = json.loads(_only_json(text))
+            if not isinstance(rows, list):
+                raise ValueError("Invalid candidates")
         except Exception as e:
             ctx.write_log("[shopping] " + i18n.t(
-                "Could not tidy the candidates: {detail}", detail=e))
-            return []
+                "Could not tidy the candidates: {detail}", detail=type(e).__name__))
+            raise ShoppingError(i18n.t("Search results could not be read. Previous results are still shown."))
         return [c for c in (_to_candidate(r) for r in rows if isinstance(r, dict)) if c]
 
     # -- 결제·열기 — ★액자가 보낸 것은 **번호뿐**이다★ ---------------------------
@@ -288,6 +333,10 @@ class ShoppingPlugin(Plugin):
                 "That is the last of them.") if action == "next" else i18n.t(
                 "This is already the first page."))
 
+        if getattr(ctx, "brain", None) is not None:
+            remember_search(ctx.brain, _user(ctx), state["query"],
+                            [Candidate(**{k: v for k, v in item.items() if k in Candidate.__dataclass_fields__}) for item in shown],
+                            agent=self, criteria=state.get("criteria", ""))
         state["page"] = page
         state.pop("notice", None)      # 지난 쪽에서 누른 단추의 소식은 여기 안 따라온다
         _save(ctx, state)
@@ -297,6 +346,15 @@ class ShoppingPlugin(Plugin):
                       page=page + 1, pages=pages)
 
     # -- ★값이 내리면 먼저 말한다★ (Sean 요구 2026-08-18) --------------------
+    def _may_check(self, ctx):
+        from cosmos.contracts import hooks
+        from cosmos.core import agents, capabilities, permissions, userstate
+        with userstate.scope(ctx.user_id):
+            return (hooks.enabled(self, "notice", ctx.user_id)
+                    and not agents.is_removed(self.name, user_id=ctx.user_id)
+                    and capabilities.is_allowed(self, args={"action": "search"},
+                                                blocked_capabilities=permissions.effective_blocked()))
+
     def advise(self, ctx: ToolContext) -> None:
         """배경에서 지켜보다 **싸졌을 때** 알린다 — 그리고 해소되면 스스로 내린다.
 
@@ -317,42 +375,62 @@ class ShoppingPlugin(Plugin):
         `watchlist`에서 빠지고, 그 순간 이 함수가 **알림을 내린다**(`clear`).
         내려가지 않는 알림은 두 번째부터 무시당한다.
         """
+        if not self._may_check(ctx):
+            return
         brain = getattr(ctx, "brain", None)
         if brain is None or not callable(getattr(ctx, "notice", None)):
             return
-        uid = getattr(ctx, "user_id", "local")
+        uid = _user(ctx)
         try:
+            preferences = _preferences(ctx)
+            if not preferences["price_checks"]:
+                return
             watching = watchlist(brain, uid)
         except Exception:
             return
 
         # ★해소되면 스스로 내려간다★ 지켜볼 것에서 빠진 물건의 알림은 여기서 사라진다.
         open_keys = {self._notice_key(row["query"]) for row in watching}
-        for key in list(self._raised - open_keys):
+        for key in list(self._raised.get(uid, set()) - open_keys):
             self._clear(ctx, key)
 
-        row = next((r for r in watching if due_for_recheck(r["last_checked"])), None)
+        row = next((r for r in watching if due_for_recheck(r["last_checked"], every_sec=preferences["check_hours"] * 3600)), None)
         if row is None:
             return
         self._check_one(ctx, row)
 
     def _check_one(self, ctx: ToolContext, row: dict) -> None:
         """지켜보던 것 하나를 다시 보고, 말할 만하면 알린다."""
-        brain, uid = ctx.brain, getattr(ctx, "user_id", "local")
+        brain, uid = ctx.brain, _user(ctx)
         watching = row["watching"]
+        preferences = _preferences(ctx)
+        if not preferences["price_checks"]:
+            return
         try:
             fresh = rank(self._find(ctx, row["query"]))
         except Exception:
             return
+        # A check may have been disabled while its search was in flight.
+        preferences = _preferences(ctx)
+        if not preferences["price_checks"] or not self._may_check(ctx):
+            return
+        try:
+            current = next((r for r in watchlist(brain, uid) if r["wish_id"] == row["wish_id"]), None)
+        except Exception:
+            return
+        if current is None or current != row:
+            return  # Bought/booked, removed, or changed while the provider was working.
         # ★같은 상품을 찾는다★ 다른 물건이 싸진 것을 "그게 싸졌다"고 말하면 거짓말이다
         same = next((c for c in fresh
                      if c.key() == Candidate(title=watching["title"]).key()), None)
-        if same is None or not same.price:
+        if same is None or not same.price or same.currency != watching.get("currency", "KRW"):
             remember_check(brain, uid, row["wish_id"])
             return
 
         verdict = worth_interrupting(watching["price"], same.price,
-                                     last_alert=row["last_alert"])
+                                     last_alert=row["last_alert"],
+                                     min_ratio=preferences["drop_percent"] / 100,
+                                     min_delta=3000 if same.currency == "KRW" else 0)
         if not verdict["tell"]:
             remember_check(brain, uid, row["wish_id"])
             return
@@ -361,7 +439,7 @@ class ShoppingPlugin(Plugin):
         try:
             remember_search(brain, uid, row["query"], fresh, agent=self)
         except Exception:
-            pass
+            return
         ctx.notice(
             self._notice_key(row["query"]),
             # ★말로 나가는 줄이다★ 읽는 글이 아니라 **하는 말**로 쓴다
@@ -374,20 +452,20 @@ class ShoppingPlugin(Plugin):
                           seller=same.seller or i18n.t("the shop")),
             action={"label": i18n.t("Show me"), "tool": self.name,
                     "args": {"query": row["query"]}})
-        self._raised.add(self._notice_key(row["query"]))
+        self._raised.setdefault(uid, set()).add(self._notice_key(row["query"]))
         remember_check(brain, uid, row["wish_id"], alerted=True)
 
     @staticmethod
     def _notice_key(query: str) -> str:
         """★의도마다 하나★ 상품마다 키를 만들면 한 물건으로 알림이 넷 뜬다."""
-        return "price:" + str(query or "")[:80]
+        return "price:" + sha256(str(query or "").encode()).hexdigest()[:24]
 
     def _clear(self, ctx: ToolContext, key: str) -> None:
         try:
             ctx.clear_notice(key)
         except Exception:
             pass
-        self._raised.discard(key)
+        self._raised.setdefault(_user(ctx), set()).discard(key)
 
     # -- ★"샀어" · "안 살래" 를 적는다★ ---------------------------------------
     def _settle(self, ctx: ToolContext, action: str, index) -> str:
@@ -399,12 +477,10 @@ class ShoppingPlugin(Plugin):
         state = _load(ctx)
         items = state.get("items") or []
         try:
-            position = int(index or 1)
+            position = int(index if index is not None else 1)
         except (TypeError, ValueError):
-            position = 1
+            position = 0
         if not (1 <= position <= len(items)):
-            position = 1
-        if not items:
             return i18n.t("Which one? Search for it and I will line them up.")
         title = str(items[position - 1].get("title") or "")
         outcome = "" if action == "still_looking" else action
@@ -413,11 +489,14 @@ class ShoppingPlugin(Plugin):
         if brain is None or not state.get("query"):
             return i18n.t("I could not write that down.")
         try:
-            remember_outcome(brain, getattr(ctx, "user_id", "local"),
-                             state["query"], title, outcome)
+            saved = remember_outcome(brain, _user(ctx),
+                                     state["query"], title, outcome)
+            if not saved:
+                return i18n.t("I could not write that down.")
+            items[position - 1]["outcome"] = action
         except Exception as e:
             ctx.write_log("[shopping] " + i18n.t(
-                "Could not write down what you decided: {detail}", detail=e))
+                "Could not write down what you decided: {detail}", detail=type(e).__name__))
             return i18n.t("I could not write that down.")
         # 지켜보기를 그만두는 순간 알림도 내려간다(해소되면 사라진다)
         if outcome:
@@ -452,24 +531,23 @@ class ShoppingPlugin(Plugin):
                 "I lost track of that one — search again and I will line them up."))
         item = items[position - 1]
         url = str(item.get("url") or "")
-        if not url:
+        if not _safe_url(url):
             return self._notice(ctx, state, i18n.t(
                 "I do not have a link for {title}.", title=item.get("title", "")))
         if action == "open":
-            ctx.run_tool("browser_control", {"url": url})
-            return self._notice(ctx, state, i18n.t("Opened {title}.",
-                                                   title=item.get("title", "")))
+            result = ctx.run_tool("browser_control", {"url": url})
+            return self._notice(ctx, state, str(result) or i18n.t("The browser did not confirm opening."))
 
         # ★기억이 먼저다★ 월렛에 넘기고 나서 남기면, 월렛이 거절했을 때는 아무 흔적도
         # 안 남는다 — 그런데 *"결제하려 했다"* 는 거절당해도 참인 사실이다.
         if (brain := ctx.brain) is not None and state.get("query"):
             try:
-                remember_checkout(brain, getattr(ctx, "user_id", "local"),
+                remember_checkout(brain, _user(ctx),
                                   state["query"], str(item.get("title") or ""),
                                   origin_of(url), agent=self)
             except Exception as e:
                 ctx.write_log("[shopping] " + i18n.t(
-                    "Could not remember the checkout: {detail}", detail=e))
+                    "Could not remember the checkout: {detail}", detail=type(e).__name__))
         # 월렛이 하는 일은 **요청**이다 — 승인도 마지막 버튼도 사람의 것이다(W5).
         # ★값을 함께 넘긴다★ 승인의 한도(`per_approval`·`per_day`)는 금액 위에서만
         # 성립한다 — 우리가 아는 값을 안 넘기면 사용자가 그것을 손으로 다시 적어야 하고,
@@ -497,28 +575,17 @@ class ShoppingPlugin(Plugin):
 
     # -- 화면 -----------------------------------------------------------------
     def view(self, ctx: ToolContext, **params) -> dict:
-        """★비교는 여기서 한다★ 말로는 둘까지, 나머지는 이 화면이 보여준다.
-
-        ## ★액자를 떠나 **선언 블록**으로 돌아왔다★ (Sean 물음 2026-08-18)
-
-        예전에는 표·도식·추천을 한 덩어리 HTML로 만들어 액자(`iframe sandbox`)에
-        넣었다. 자유롭긴 했지만 대가가 셋이었다:
-
-        | 대가 | 무슨 일이 났나 |
-        |---|---|
-        | **디자인 토큰이 안 닿는다** | 액자 안은 다른 문서다 — 색을 손으로 다시 적었다 |
-        | **찍을 수 없다** | 계측기가 액자 속을 못 봐서 *"화면이 섰다"* 를 못 잰다 |
-        | **페이지 넘김이 어렵다** | 액자가 바깥에 말을 걸어야 한 쪽 넘어간다 |
-
-        그런데 이 화면이 그리는 것은 **우리가 아는 모양**이었다 — 나란히 비교
-        (`compare`)와 가격 흐름(`price_history`)은 어휘에 **이미 있었고**, 셸도
-        그릴 줄 알았다. 우리 것을 남의 방식으로 그리고 있었던 셈이다.
-
-        ⚠️ ★액자를 없앤 것이 아니다★ `html` 블록은 그대로 있고, **마켓에서 받은
-        남의 에이전트**가 자기 화면을 그릴 때 그 길을 쓴다. 우리 어휘로 표현되는
-        것을 우리가 굳이 액자에 넣지 않을 뿐이다.
-        """
-        state = _load(ctx)
+        """Stable specialty view with a declarative fallback for older contexts."""
+        try:
+            _user(ctx)
+            state = _load(ctx)
+            if callable(getattr(ctx, "load_agent_state", None)):
+                state = dict(state, preferences=_preferences(ctx), open_settings=params.get("_tab") == "settings")
+        except ShoppingError as error:
+            return {"title": self.view_title, "blocks": [{"type": "text", "tone": "warn", "text": str(error)}]}
+        if callable(getattr(ctx, "load_agent_state", None)):
+            from shopping_viewer import block
+            return {"title": self.view_title, "blocks": [block(state, lang=getattr(ctx, "lang", "en"))], "refresh_ms": 5000}
         if not state:
             return {"title": self.view_title,
                     "blocks": [{"type": "text", "tone": "muted",
@@ -562,9 +629,9 @@ class ShoppingPlugin(Plugin):
                                             low=(base + n == low))
                                  for n, item in enumerate(shown)]})
 
-        if history := (state.get("history") or []):
+        if page == 0 and (history := state.get("history") or []):
             blocks.append({"type": "price_history", "items": history,
-                           "label": i18n.t("Price trend")})
+                           "label": i18n.t("Price trend") + " · " + state.get("history_title", "")})
 
         if buttons := self._nav(items, page, pages):
             blocks.append({"type": "actions", "items": buttons})
@@ -620,14 +687,17 @@ class ShoppingPlugin(Plugin):
     def _remember_view(self, ctx: ToolContext, query: str,
                        candidates: list[Candidate], past: dict, diff: dict) -> None:
         """★도구와 화면이 **같은 것**을 본다★ 화면이 다시 검색하면 두 번 돈다."""
+        prepare = getattr(ctx, "prepare_agent_images", None)
+        images = prepare([c.image for c in candidates]) if callable(prepare) else {}
         history = []
-        for old in (past.get("candidates") or []):
-            if old.get("price") and old.get("seen_at"):
+        lead = candidates[0] if candidates else None
+        if lead:
+            old = next((c for c in past.get("candidates", []) if Candidate(title=c["title"]).key() == lead.key()
+                        and c.get("currency", "KRW") == lead.currency), None)
+            if old and old.get("price") and old.get("seen_at"):
                 history.append({"ts": old["seen_at"], "price": old["price"]})
-        for c in candidates:
-            if c.price and c.seen_at:
-                history.append({"ts": c.seen_at, "price": c.price})
-        history.sort(key=lambda p: p["ts"])
+            if lead.price and lead.seen_at:
+                history.append({"ts": lead.seen_at, "price": lead.price})
         try:
             # ★주소를 **여기** 둔다★ 화면의 단추는 번호만 보내므로(구멍 2), 번호를
             # 주소로 바꾸는 표가 우리 쪽에 있어야 한다. 화면으로는 안 내려간다 —
@@ -635,15 +705,17 @@ class ShoppingPlugin(Plugin):
             _save(ctx, {
                 # ★새 검색은 **첫 쪽부터**★ 3쪽을 보던 중에 다른 것을 찾으면, 쪽수가
                 # 남아 있어 새 목록의 9번째부터 보인다(그리고 그것은 고장으로 읽힌다).
-                "query": query, "diff": diff, "history": history[-30:], "page": 0,
+                "query": query, "criteria": past.get("criteria", ""), "revision": uuid4().hex,
+                "diff": diff, "history": history, "history_title": lead.title if lead else "", "page": 0,
                 "items": [{"title": c.title, "price": c.price, "currency": c.currency,
                            "seller": c.seller, "note": c.note, "seen_at": c.seen_at,
                            "affiliate": c.affiliate, "signals": dict(c.signals or {}),
-                           "url": c.url, "image": c.image}
+                           "outcome": next(("bought" if old.get("bought_at") else "dropped" if old.get("dropped_at") else ""
+                                            for old in past.get("candidates", []) if Candidate(title=old["title"]).key() == c.key()), ""),
+                           "url": c.url, "image": c.image, "image_data": images.get(c.image, "")}
                           for c in candidates]})
-        except Exception as e:
-            ctx.write_log("[shopping] " + i18n.t(
-                "Could not save the screen state: {detail}", detail=e))
+        except Exception:
+            raise ShoppingError(i18n.t("The comparison could not be saved. Try searching again."))
 
     def _say(self, query: str, candidates: list[Candidate], diff: dict) -> str:
         """★음성은 짧아야 한다★ 목록을 읽어 주면 사람은 넷째쯤에서 앞을 잊는다."""
@@ -676,11 +748,11 @@ def _headlines(diff: dict) -> list[dict]:
             out.append({"tone": "good",
                         "text": i18n.t(
                             "{title}, which you were looking at last time, went down "
-                            "by {amount}.", title=change["title"], amount=f"{won:,}")})
+                            "by {amount}.", title=change["title"], amount=money(won, change.get("currency", "KRW")))})
         else:
             out.append({"tone": "warn",
                         "text": i18n.t("{title} went up by {amount}.",
-                                       title=change["title"], amount=f"{won:,}")})
+                                       title=change["title"], amount=money(won, change.get("currency", "KRW")))})
     for title in (diff.get("gone") or [])[:1]:
         out.append({"tone": "muted",
                     "text": i18n.t("{title} is not showing up right now.",
@@ -700,8 +772,16 @@ def _to_candidate(row: dict) -> Candidate | None:
     title = str(row.get("title") or "").strip()
     if not title:
         return None
-    signals = {k: v for k, v in (row.get("signals") or {}).items()
-               if k in TRUST_SIGNALS and v is not None}
+    raw_signals = row.get("signals")
+    raw_signals = raw_signals if isinstance(raw_signals, dict) else {}
+    signals = {}
+    for key, value in raw_signals.items():
+        if key == "rating" and type(value) in (int, float) and 0 <= value <= 5:
+            signals[key] = value
+        elif key == "review_count" and type(value) is int and value >= 0:
+            signals[key] = value
+        elif key == "official_store" and type(value) is bool:
+            signals[key] = value
     try:
         price = max(0, int(row.get("price") or 0))
     except (TypeError, ValueError):
@@ -710,8 +790,8 @@ def _to_candidate(row: dict) -> Candidate | None:
         title=title[:120], price=price,
         currency=str(row.get("currency") or "KRW")[:8],
         seller=str(row.get("seller") or "")[:60],
-        url=str(row.get("url") or "")[:500],
-        image=str(row.get("image") or "")[:400],
+        url=_safe_url(row.get("url")),
+        image=_safe_url(row.get("image")),
         signals=signals, note=str(row.get("note") or "")[:200],
         # ★언제 잰 값인지 **여기서** 붙인다★ 모델이 준 시각을 믿으면 지어낸 값이 섞인다
         seen_at=now_ts())
@@ -724,20 +804,86 @@ def _only_json(text: str) -> str:
     return body[start:end + 1] if 0 <= start < end else "[]"
 
 
-# 화면이 읽을 것을 두는 자리. ★코드가 아니라 **상태**의 자리다★ — `data_dir`가
-# 그 둘을 갈라 두므로 에이전트를 업데이트해도 진도가 지워지지 않는다.
+class ShoppingError(Exception):
+    """Already-safe, localized action failure."""
+
+
+def _user(ctx) -> str:
+    uid = getattr(ctx, "user_id", "")
+    if not isinstance(uid, str) or not uid.strip():
+        raise ShoppingError(i18n.t("A user account is required to read shopping memory."))
+    return uid
+
+
+def _safe_url(value) -> str:
+    from urllib.parse import urlsplit
+    url = str(value or "").strip()
+    try:
+        parts = urlsplit(url)
+        if parts.scheme == "https" and parts.hostname and not parts.username and not parts.password and len(url) <= 500:
+            parts.port
+            return url
+    except ValueError:
+        pass
+    return ""
+
+
 _STATE_FILE = "last_search.json"
 
 
+def _legacy_path(ctx):
+    # Ownerless legacy files are never copied into another account.
+    return ctx.data_dir("shopping") / (sha256(_user(ctx).encode()).hexdigest() + "." + _STATE_FILE)
+
+
 def _save(ctx: ToolContext, state: dict) -> None:
-    (ctx.data_dir("shopping") / _STATE_FILE).write_text(
-        json.dumps(state, ensure_ascii=False), encoding="utf-8")
+    _user(ctx)
+    try:
+        if callable(getattr(ctx, "save_agent_state", None)):
+            ctx.save_agent_state("shopping", state, "workspace")
+        else:
+            path = _legacy_path(ctx)
+            temporary = path.with_suffix("." + uuid4().hex + ".tmp")
+            temporary.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
+            temporary.replace(path)
+    except Exception:
+        raise ShoppingError(i18n.t("The comparison could not be saved. Try searching again."))
 
 
 def _load(ctx: ToolContext) -> dict:
-    """읽지 못하면 **빈 상태**다 — 화면은 빈 것도 그릴 수 있어야 한다(M-H20)."""
+    _user(ctx)
     try:
-        path = ctx.data_dir("shopping") / _STATE_FILE
-        return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+        if callable(getattr(ctx, "load_agent_state", None)):
+            data = ctx.load_agent_state("shopping", "workspace")
+        else:
+            path = _legacy_path(ctx)
+            data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+        if not isinstance(data, dict):
+            raise ValueError("Invalid state")
+        return data
     except Exception:
-        return {}
+        raise ShoppingError(i18n.t("Saved comparisons could not be read. Try reopening this view."))
+
+
+# Personal controls live in the existing account-scoped state contract, separate
+# from comparison snapshots so a fresh or empty search cannot erase them.
+def _preferences(ctx):
+    try:
+        read = getattr(ctx, "load_agent_state", None)
+        saved = read("shopping", "preferences") if callable(read) else {}
+        if not isinstance(saved, dict):
+            raise ValueError("Invalid preferences")
+        values = {"price_checks": saved.get("price_checks", True),
+                  "check_hours": saved.get("check_hours", 12),
+                  "drop_percent": saved.get("drop_percent", 7)}
+        if type(values["price_checks"]) is not bool or type(values["check_hours"]) is not int or type(values["drop_percent"]) is not int or values["check_hours"] not in (6,12,24,72) or values["drop_percent"] not in (7,10,15,20):
+            raise ValueError("Invalid preferences")
+        return dict(values, revision=sha256(json.dumps(values, sort_keys=True).encode()).hexdigest()[:20])
+    except Exception:
+        raise ShoppingError(_setting_text(ctx, "settings_unavailable")) from None
+
+
+def _setting_text(ctx, key):
+    from shopping_viewer import COPY, LANGS
+    lang = getattr(ctx, "lang", "en")
+    return COPY[key][LANGS.index(lang) if lang in LANGS else 0]

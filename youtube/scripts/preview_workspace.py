@@ -38,18 +38,36 @@ def main():
         @property
         def brain(self): return brain
         def write_log(self, *a, **k): pass
+        def prepare_agent_images(self, urls):
+            import base64
+            fixture = HERE.parent / 'shopping/scripts/fixtures/headphones-2.jpg'
+            return {url: 'data:image/jpeg;base64,' + base64.b64encode(fixture.read_bytes()).decode()
+                    for url in urls if url.startswith('https://fixture.invalid/')}
         def think(self, *a, **k): return "설명 기반 검증용 요약입니다. 실제 모델을 호출하지 않았습니다."
         def run_tool(self, *a, **k): return "Preview: browser opening requested; no external browser was opened."
     ctx, agent = Context(), YouTubePlugin()
+    # 실제 코어의 게시 거부 상태로 검색/상세/요약이 동작하는지 검증한다.
+    from types import SimpleNamespace
+    from cosmos.core import agents, permissions
+    from cosmos.core.orchestrator import Orchestrator
+    from cosmos.core.personas import Persona
+    from cosmos.core.registry import Registry
+    registry = Registry()
+    registry.register(agent)
+    agents.set_enabled("youtube", True)
+    permissions.set_state("media.publish", "deny")
+    engine = SimpleNamespace(registry=registry, persona=Persona(),
+                             session=SimpleNamespace(user_id=ctx.user_id))
     agent._have = lambda ctx: {"google": "preview-only"}
     def api(ctx, path, params):
         if params.get("q") == "empty": return {"items": []}
         if params.get("q") == "error": raise RuntimeError("SIMULATED_SECRET")
         ids = [params["id"]] if "id" in params else ["aaaaaaaaaaa", "bbbbbbbbbbb"]
         return {"items": [{"id": ident, "snippet": {
-            "title": "작은 채널의 첫 이야기" if ident.startswith("a") else "<script>alert('unsafe')</script>",
+            "title": "헤드폰 선택 전, 소리를 비교하는 방법" if ident.startswith("a") else "<script>alert('unsafe')</script>",
             "description": "이것은 UI 검증용 데이터입니다. 실제 영상이나 사용자 데이터가 아닙니다.",
-            "channelTitle": "검증용 채널", "channelId": "UC-preview"}} for ident in ids]}
+            "channelTitle": "검증용 채널", "channelId": "UC-preview",
+            "thumbnails": {"medium": {"url": "https://fixture.invalid/thumbnail"}}}} for ident in ids]}
     agent._api = api
     for i in range(3):
         plan = plan_upload("/preview.mp4", title=f"검증용 에피소드 {i+1}", tags=["대화", "일상"],
@@ -71,6 +89,8 @@ def main():
             if self.path.startswith("/fonts/"): self.send_header("Access-Control-Allow-Origin", "*")
             super().end_headers()
         def do_GET(self):
+            if self.path == "/gate-preview":
+                return self._blob((preview.APP.parent / "gate.html").read_bytes(), "text/html; charset=utf-8")
             if self.path == "/base.css":
                 return self._blob((preview.APP.parent / "base.css").read_bytes(), "text/css")
             if self.path.startswith("/vendor/"):
@@ -88,9 +108,9 @@ def main():
             if self.path != "/api/agent/action": return super().do_POST()
             payload = json.loads(self.rfile.read(int(self.headers.get("content-length", 0))))
             action = payload.get("args", {})
-            if payload.get("tool") != "youtube" or action.get("action") not in ("search", "info", "summarize", "trending", "play"):
+            if payload.get("tool") != "youtube" or action.get("action") not in ("layout", "search", "info", "summarize", "trending", "play"):
                 return self._json({"ok": False, "error": "Preview action denied"})
-            result = agent.run(ctx, **action)
+            result = Orchestrator.dispatch(engine, "youtube", ctx, action)
             return self._json({"ok": True, "result": result, "view": view()})
     server = preview.http.server.ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
     print(f"Isolated preview: http://127.0.0.1:{args.port}", flush=True)

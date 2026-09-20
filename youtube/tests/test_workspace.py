@@ -89,6 +89,42 @@ def test_view_reads_same_results_without_network_and_has_stable_html(contexts, p
     assert "SECRET" not in json.dumps(first)
 
 
+def test_reading_setup_does_not_ask_for_upload_connection(contexts, plugin):
+    sean, _ = contexts
+    assert plugin._connect_line(sean) == ""  # reading API key, no Google upload connection
+
+
+def test_real_core_dispatch_reads_and_remembers_without_publishing_permission(contexts, plugin, monkeypatch):
+    from cosmos.core import agents, autonomy, permissions
+    from cosmos.core.orchestrator import Orchestrator
+    from cosmos.core.personas import Persona
+    from cosmos.core.registry import Registry
+    sean, other = contexts
+    registry = Registry()
+    registry.register(plugin)
+    monkeypatch.setattr(agents, "is_enabled", lambda *a, **kw: True)
+    monkeypatch.setattr(agents, "hidden_names", lambda p: set())
+    monkeypatch.setattr(permissions, "effective_blocked", lambda p=None: {"media.publish"})
+    monkeypatch.setattr(plugin, "_upload", lambda *a: pytest.fail("upload executed"))
+    engine = SimpleNamespace(registry=registry, persona=Persona(),
+                             session=SimpleNamespace(user_id=sean.user_id))
+    assert registry.declarations(blocked_capabilities={"media.publish"})[0]["parameters"]["properties"]["action"]["enum"] == [
+        "layout", "search", "info", "summarize", "trending", "play"]
+    autonomy.reset()
+    try:
+        for action in ("search", "info", "summarize", "trending", "play"):
+            result = Orchestrator.dispatch(engine, "youtube", sean, {"action": action, "query": "aaaaaaaaaaa"})
+            assert "Permission is off" not in result and not autonomy.is_held(result)
+        assert recall_seen(sean.brain, sean.user_id, "aaaaaaaaaaa")
+        assert not recall_seen(other.brain, other.user_id, "aaaaaaaaaaa")
+        assert sean.load_agent_state("youtube", "workspace")["videos"]
+        assert other.load_agent_state("youtube", "workspace") == {}
+        assert autonomy.pending(sean.user_id) == []
+        assert "media.publish" in Orchestrator.dispatch(engine, "youtube", sean, {"action": " UPLOAD "})
+    finally:
+        autonomy.reset()
+
+
 def test_missing_identity_never_falls_back_to_local(plugin):
     ctx = Context("")
     assert "Sign in" in plugin.run(ctx, action="play", query="aaaaaaaaaaa")
@@ -210,3 +246,81 @@ def test_large_results_still_fit_the_view_contract():
     view = normalize({"blocks": [block(channel, latest)]})
     assert view["blocks"][0]["type"] == "html"
     assert len(json.dumps(view["blocks"][0]["state"], ensure_ascii=False).encode()) < 100000
+
+
+def test_thumbnail_comes_from_api_evidence_and_stays_in_workspace(contexts, plugin, monkeypatch):
+    from youtube_scout import normalize
+    video=normalize({'items':[{'id':'aaaaaaaaaaa','snippet':{'title':'Video',
+        'thumbnails':{'medium':{'url':'https://images.example/video.jpg'}}}}]})[0]
+    assert video.thumbnail=='https://images.example/video.jpg'
+    ctx,_=contexts
+    calls=[]
+    monkeypatch.setattr(ctx,'prepare_agent_images',lambda urls:(calls.append(urls) or {video.thumbnail:'data:image/jpeg;base64,EXAMPLE'}))
+    assert plugin._save_results(ctx,'search','sample',[video])==''
+    state=ctx.load_agent_state('youtube','workspace')
+    assert state['videos'][0]['image']=='data:image/jpeg;base64,EXAMPLE'
+    plugin.view(ctx);plugin.view(ctx)
+    assert len(calls)==1
+
+
+def test_layout_is_user_owned_persistent_and_does_not_call_services(contexts, plugin, monkeypatch):
+    sean, other = contexts
+    plugin.run(sean, action='search', query='reference')
+    before = sean.load_agent_state('youtube', 'workspace')
+    monkeypatch.setattr(plugin, '_have', lambda *a: pytest.fail('Layout must not read credentials'))
+    assert '저장했습니다' in plugin.run(sean, action='layout', view_mode='research')
+    assert sean.load_agent_state('youtube', 'workspace') == before
+    assert other.load_agent_state('youtube', 'presentation') == {}
+    again = YouTubePlugin()
+    html = next(b for b in again.view(sean)['blocks'] if b['type'] == 'html')
+    assert html['state']['view_mode'] == 'research'
+    assert '저장했습니다' in plugin.run(sean, action='layout', view_mode='channel')
+    assert sean.load_agent_state('youtube', 'presentation')['view_mode'] == 'channel'
+
+
+@pytest.mark.parametrize('mode', ['fullscreen', None, {}, ['research']])
+def test_invalid_layout_cannot_overwrite_the_saved_choice(contexts, plugin, mode):
+    sean, _ = contexts
+    plugin.run(sean, action='layout', view_mode='research')
+    assert '선택해 주세요' in plugin.run(sean, action='layout', view_mode=mode)
+    assert sean.load_agent_state('youtube', 'presentation')['view_mode'] == 'research'
+
+
+def test_failed_layout_save_reports_failure_without_claiming_a_network_error(contexts, plugin, monkeypatch):
+    sean, _ = contexts
+    monkeypatch.setattr(sean, 'save_agent_state', lambda *a, **k: (_ for _ in ()).throw(RuntimeError('PRIVATE_PATH')))
+    assert plugin.run(sean, action='layout', view_mode='research') == '화면 구성을 저장하지 못했습니다. 다시 시도해 주세요.'
+
+
+def test_failed_state_read_keeps_the_view_usable(contexts, plugin, monkeypatch):
+    sean, _ = contexts
+    monkeypatch.setattr(sean, 'load_agent_state', lambda *a, **k: (_ for _ in ()).throw(RuntimeError('PRIVATE_PATH')))
+    html = next(b for b in plugin.view(sean)['blocks'] if b['type'] == 'html')
+    assert html['state']['view_mode'] == 'channel'
+    assert 'PRIVATE_PATH' not in str(html['state'])
+    assert html['state']['warning']
+
+
+def test_optional_thumbnail_failure_keeps_search_results(contexts,plugin,monkeypatch):
+    ctx,_=contexts
+    monkeypatch.setattr(ctx,'prepare_agent_images',lambda *a:(_ for _ in ()).throw(OSError('private')))
+    answer=plugin.run(ctx,action='search',query='reference')
+    assert 'First reference' in answer and 'private' not in answer
+    assert ctx.load_agent_state('youtube','workspace')['videos'][0]['image']==''
+
+
+def test_late_search_cannot_replace_workspace_after_network_revoked(contexts,plugin,monkeypatch):
+    from cosmos.core import permissions,userstate
+    ctx,_=contexts
+    plugin.run(ctx,action='search',query='before')
+    before=ctx.load_agent_state('youtube','workspace')
+    api=plugin._api
+    def late(*args,**kw):
+        permissions.set_state('network','deny')
+        return api(*args,**kw)
+    monkeypatch.setattr(plugin,'_api',late)
+    with userstate.scope(ctx.user_id):
+        try:
+            assert 'access changed' in plugin.run(ctx,action='search',query='after')
+            assert ctx.load_agent_state('youtube','workspace')==before
+        finally:permissions.set_state('network','allow')

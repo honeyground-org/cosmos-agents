@@ -31,7 +31,6 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "Best pick": "추천",
         "Cheapest": "최저가",
         "Could not remember the checkout: {detail}": "결제 기록을 못 남겼어요: {detail}",
-        "Could not save the screen state: {detail}": "화면 상태를 못 저장했어요: {detail}",
         "Could not tidy old candidates: {detail}": "옛 후보를 못 정리했어요: {detail}",
         "Could not tidy the candidates: {detail}": "후보를 못 정리했어요: {detail}",
         "Could not write down what you decided: {detail}": "말씀하신 걸 못 적었어요: {detail}",
@@ -54,7 +53,6 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "Now {price} at {seller}.": "지금 {seller}에서 {price}이에요.",
         "Numbers {first} to {last} of {total}, page {page} of {pages}.":
             "{total}개 중 {first}~{last}번이에요. {pages}쪽 중 {page}쪽.",
-        "Opened {title}.": "{title}을(를) 열었어요.",
         "Previous": "이전",
         "Price trend": "가격 흐름",
         "Price unknown": "가격 모름",
@@ -87,7 +85,6 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "Best pick": "おすすめ",
         "Cheapest": "最安",
         "Could not remember the checkout: {detail}": "決済の記録を残せませんでした: {detail}",
-        "Could not save the screen state: {detail}": "画面の状態を保存できませんでした: {detail}",
         "Could not tidy old candidates: {detail}": "古い候補を整理できませんでした: {detail}",
         "Could not tidy the candidates: {detail}": "候補を整理できませんでした: {detail}",
         "Could not write down what you decided: {detail}": "お返事を記録できませんでした: {detail}",
@@ -110,7 +107,6 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "Now {price} at {seller}.": "今は{seller}で{price}です。",
         "Numbers {first} to {last} of {total}, page {page} of {pages}.":
             "{total}件中 {first}〜{last}番目です。{pages}ページ中 {page}ページ目。",
-        "Opened {title}.": "{title}を開きました。",
         "Previous": "前へ",
         "Price trend": "価格の推移",
         "Price unknown": "価格不明",
@@ -141,7 +137,6 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "Best pick": "Empfehlung",
         "Cheapest": "Günstigster",
         "Could not remember the checkout: {detail}": "Konnte den Kauf nicht festhalten: {detail}",
-        "Could not save the screen state: {detail}": "Konnte den Bildschirmzustand nicht sichern: {detail}",
         "Could not tidy old candidates: {detail}": "Konnte alte Kandidaten nicht aufräumen: {detail}",
         "Could not tidy the candidates: {detail}": "Konnte die Kandidaten nicht aufräumen: {detail}",
         "Could not write down what you decided: {detail}": "Konnte deine Entscheidung nicht notieren: {detail}",
@@ -164,7 +159,6 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "Now {price} at {seller}.": "Jetzt {price} bei {seller}.",
         "Numbers {first} to {last} of {total}, page {page} of {pages}.":
             "Nummern {first} bis {last} von {total}, Seite {page} von {pages}.",
-        "Opened {title}.": "{title} geöffnet.",
         "Previous": "Zurück",
         "Price trend": "Preisverlauf",
         "Price unknown": "Preis unbekannt",
@@ -195,7 +189,6 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "Best pick": "Recomendación",
         "Cheapest": "Más barato",
         "Could not remember the checkout: {detail}": "No pude guardar el pago: {detail}",
-        "Could not save the screen state: {detail}": "No pude guardar el estado de la pantalla: {detail}",
         "Could not tidy old candidates: {detail}": "No pude ordenar los candidatos antiguos: {detail}",
         "Could not tidy the candidates: {detail}": "No pude ordenar los candidatos: {detail}",
         "Could not write down what you decided: {detail}": "No pude anotar tu decisión: {detail}",
@@ -218,7 +211,6 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "Now {price} at {seller}.": "Ahora {price} en {seller}.",
         "Numbers {first} to {last} of {total}, page {page} of {pages}.":
             "Números {first} a {last} de {total}, página {page} de {pages}.",
-        "Opened {title}.": "He abierto {title}.",
         "Previous": "Anterior",
         "Price trend": "Evolución del precio",
         "Price unknown": "Precio desconocido",
@@ -249,7 +241,6 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "Best pick": "Recommandation",
         "Cheapest": "Le moins cher",
         "Could not remember the checkout: {detail}": "Je n'ai pas pu noter le paiement : {detail}",
-        "Could not save the screen state: {detail}": "Je n'ai pas pu enregistrer l'état de l'écran : {detail}",
         "Could not tidy old candidates: {detail}": "Je n'ai pas pu ranger les anciens candidats : {detail}",
         "Could not tidy the candidates: {detail}": "Je n'ai pas pu ranger les candidats : {detail}",
         "Could not write down what you decided: {detail}": "Je n'ai pas pu noter ta décision : {detail}",
@@ -272,7 +263,6 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "Now {price} at {seller}.": "Maintenant {price} chez {seller}.",
         "Numbers {first} to {last} of {total}, page {page} of {pages}.":
             "Numéros {first} à {last} sur {total}, page {page} sur {pages}.",
-        "Opened {title}.": "{title} ouvert.",
         "Previous": "Précédent",
         "Price trend": "Évolution du prix",
         "Price unknown": "Prix inconnu",
@@ -299,6 +289,78 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
             "{title}, que tu regardais la dernière fois, a baissé de {amount}.",
     },
 }
+
+
+# AG-03 action and state failures.
+TRANSLATIONS['ko'].update({'The comparison changed. Select the item again.': '비교 목록이 바뀌었습니다. 상품을 다시 선택하세요.',
+ 'Shopping is unavailable. Try again shortly.': '쇼핑 작업을 처리하지 못했습니다. 잠시 뒤 다시 시도하세요.',
+ 'Memory is unavailable. Try again before searching.': '기억을 읽지 못했습니다. 잠시 뒤 검색을 다시 시도하세요.',
+ 'Search is unavailable. Previous results are still shown.': '검색을 실행하지 못했습니다. 이전 결과를 표시하고 있습니다.',
+ 'Search results could not be read. Previous results are still shown.': '검색 결과를 해석하지 못했습니다. 이전 결과를 표시하고 '
+                                                                        '있습니다.',
+ 'The browser did not confirm opening.': '브라우저 열기 결과를 확인하지 못했습니다.',
+ 'The comparison could not be saved. Try searching again.': '비교 결과를 저장하지 못했습니다. 다시 검색하세요.',
+ 'A user account is required to read shopping memory.': '쇼핑 기억을 읽으려면 사용자 계정이 필요합니다.',
+ 'Saved comparisons could not be read. Try reopening this view.': '저장된 비교를 읽지 못했습니다. 화면을 다시 열어주세요.'})
+TRANSLATIONS['ja'].update({'The comparison changed. Select the item again.': '比較が変わりました。商品を選び直してください。',
+ 'Shopping is unavailable. Try again shortly.': 'ショッピングを処理できません。後でもう一度お試しください。',
+ 'Memory is unavailable. Try again before searching.': '記憶を読み込めません。後で検索してください。',
+ 'Search is unavailable. Previous results are still shown.': '検索できません。前の結果を表示しています。',
+ 'Search results could not be read. Previous results are still shown.': '検索結果を読み取れません。前の結果を表示しています。',
+ 'The browser did not confirm opening.': 'ブラウザーで開いたか確認できません。',
+ 'The comparison could not be saved. Try searching again.': '比較を保存できません。再検索してください。',
+ 'A user account is required to read shopping memory.': 'ショッピングの記憶にはユーザーアカウントが必要です。',
+ 'Saved comparisons could not be read. Try reopening this view.': '保存した比較を読み込めません。画面を開き直してください。'})
+TRANSLATIONS['de'].update({'The comparison changed. Select the item again.': 'Der Vergleich wurde geändert. Wählen Sie erneut.',
+ 'Shopping is unavailable. Try again shortly.': 'Shopping ist nicht verfügbar. Versuchen Sie es später.',
+ 'Memory is unavailable. Try again before searching.': 'Gedächtnis nicht verfügbar. Versuchen Sie die '
+                                                       'Suche später.',
+ 'Search is unavailable. Previous results are still shown.': 'Suche nicht verfügbar. Die vorherigen '
+                                                             'Ergebnisse bleiben sichtbar.',
+ 'Search results could not be read. Previous results are still shown.': 'Suchergebnisse konnten nicht '
+                                                                        'gelesen werden. Vorherige '
+                                                                        'Ergebnisse bleiben sichtbar.',
+ 'The browser did not confirm opening.': 'Das Öffnen wurde nicht bestätigt.',
+ 'The comparison could not be saved. Try searching again.': 'Der Vergleich wurde nicht gespeichert. '
+                                                            'Suchen Sie erneut.',
+ 'A user account is required to read shopping memory.': 'Ein Benutzerkonto ist für das '
+                                                        'Shopping-Gedächtnis erforderlich.',
+ 'Saved comparisons could not be read. Try reopening this view.': 'Gespeicherte Vergleiche nicht '
+                                                                  'lesbar. Öffnen Sie die Ansicht '
+                                                                  'erneut.'})
+TRANSLATIONS['es'].update({'The comparison changed. Select the item again.': 'La comparación cambió. Selecciona de nuevo.',
+ 'Shopping is unavailable. Try again shortly.': 'Compras no está disponible. Inténtalo más tarde.',
+ 'Memory is unavailable. Try again before searching.': 'La memoria no está disponible. Reintenta la '
+                                                       'búsqueda más tarde.',
+ 'Search is unavailable. Previous results are still shown.': 'La búsqueda no está disponible. Se '
+                                                             'muestran los resultados anteriores.',
+ 'Search results could not be read. Previous results are still shown.': 'No se pudieron leer los '
+                                                                        'resultados. Se muestran los '
+                                                                        'anteriores.',
+ 'The browser did not confirm opening.': 'No se confirmó la apertura del navegador.',
+ 'The comparison could not be saved. Try searching again.': 'No se guardó la comparación. Busca de '
+                                                            'nuevo.',
+ 'A user account is required to read shopping memory.': 'Se necesita una cuenta para leer la memoria de '
+                                                        'compras.',
+ 'Saved comparisons could not be read. Try reopening this view.': 'No se pudieron leer las '
+                                                                  'comparaciones. Abre la vista de '
+                                                                  'nuevo.'})
+TRANSLATIONS['fr'].update({'The comparison changed. Select the item again.': 'La comparaison a changé. Sélectionnez à nouveau.',
+ 'Shopping is unavailable. Try again shortly.': 'Le service est indisponible. Réessayez plus tard.',
+ 'Memory is unavailable. Try again before searching.': 'La mémoire est indisponible. Réessayez la '
+                                                       'recherche plus tard.',
+ 'Search is unavailable. Previous results are still shown.': 'La recherche est indisponible. Les '
+                                                             'résultats précédents restent affichés.',
+ 'Search results could not be read. Previous results are still shown.': 'Impossible de lire les '
+                                                                        'résultats. Les précédents '
+                                                                        'restent affichés.',
+ 'The browser did not confirm opening.': 'L’ouverture du navigateur n’a pas été confirmée.',
+ 'The comparison could not be saved. Try searching again.': 'La comparaison n’a pas été enregistrée. '
+                                                            'Relancez la recherche.',
+ 'A user account is required to read shopping memory.': 'Un compte est nécessaire pour lire la mémoire '
+                                                        'des achats.',
+ 'Saved comparisons could not be read. Try reopening this view.': 'Impossible de lire les comparaisons. '
+                                                                  'Rouvrez cette vue.'})
 
 
 def t(text: str, /, lang: str | None = None, **params) -> str:

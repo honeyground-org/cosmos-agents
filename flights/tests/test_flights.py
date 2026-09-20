@@ -61,7 +61,8 @@ class _Ctx:
         self.cleared: list[str] = []
         self._search = search
         self._extract = extract
-        self._home = home
+        import tempfile
+        self._home = home or tempfile.mkdtemp(prefix="flights-legacy-test-")
         self._page_text = page_text
         self._grid = _GRID if grid is None else grid
         self._can_read = can_read
@@ -217,7 +218,7 @@ def test_the_first_time_there_is_no_last_time():
 
 def test_a_fare_that_dropped_is_the_headline():
     """★이 검사가 이 에이전트의 값어치다★"""
-    past = {"price": 290000, "seen_at": core.now_ts()}
+    past = {"price": 290000, "currency": "KRW", "seen_at": core.now_ts()}
     diff = core.compare_with_past(past, core.to_flights(_ROWS))
     assert diff["delta"] == 210000 - 290000
     line = core.headline("Flights ICN to Tokyo", core.rank(core.to_flights(_ROWS)), diff)
@@ -225,7 +226,7 @@ def test_a_fare_that_dropped_is_the_headline():
 
 
 def test_a_fare_that_rose_says_so_too():
-    past = {"price": 100000, "seen_at": core.now_ts()}
+    past = {"price": 100000, "currency": "KRW", "seen_at": core.now_ts()}
     diff = core.compare_with_past(past, core.to_flights(_ROWS))
     assert diff["delta"] == 110000
     assert "up 110,000" in core.headline("r", core.rank(core.to_flights(_ROWS)), diff)
@@ -309,7 +310,7 @@ def test_a_broken_brain_still_returns_the_flights(tmp_path):
     ctx = _Ctx(brain=_Broken())
     answer = FlightsPlugin().run(ctx, action="search", destination="Tokyo")
     assert "Peach" in answer
-    assert any("could not remember" in line for line in ctx.logs)
+    assert "could not be saved to memory" in answer
 
 
 def test_forgetting_a_route_stops_the_tracking(tmp_path):
@@ -399,13 +400,13 @@ def test_flights_to_somewhere_else_are_dropped(tmp_path):
     assert "Tokyo Air" in answer and "Osaka Air" not in answer
 
 
-def test_when_everything_is_off_route_we_still_show_something():
-    """★전부 걸러지면 빈손이 된다★ — 그때는 우리가 모델보다 낫다고 우기지 않고
-    찾아온 것을 보여 준다(빈 화면보다는 낫고, 판정은 사람이 한다)."""
+def test_explicitly_different_destination_is_never_a_fallback():
+    """A Tokyo request must not become an Osaka recommendation or remembered fare."""
     off = json.dumps([{"airline": "Osaka Air", "destination": "Osaka", "price": 100}])
-    answer = FlightsPlugin().run(_Ctx(extract=off), action="search",
-                                 destination="Tokyo")
-    assert "Osaka Air" in answer
+    ctx = _Ctx(extract=off)
+    answer = FlightsPlugin().run(ctx, action="search", destination="Tokyo")
+    assert "Osaka Air" not in answer
+    assert core._load(ctx)["items"] == []
 
 
 def test_an_unknown_action_falls_back_to_searching(tmp_path):
@@ -1076,8 +1077,9 @@ def test_nothing_matching_says_which_condition_is_the_problem(tmp_path):
     assert "Korean Air" in answer and "none on" in answer, answer
 
 
-def test_the_conditions_are_remembered_so_the_background_looks_at_the_same_thing(tmp_path):
+def test_the_conditions_are_remembered_so_the_background_looks_at_the_same_thing(tmp_path, monkeypatch):
     """★왕복으로 보던 것을 편도로 다시 보고 "내렸어요"라고 하면 거짓말이다★"""
+    monkeypatch.setattr(core, "now_ts", lambda: "2026-09-09T00:00:00+00:00")
     brain = LiteMemoryProvider(tmp_path / "brain")
     plugin = FlightsPlugin()
     ctx = _Ctx(brain=brain, home=tmp_path,
@@ -1100,9 +1102,10 @@ def test_the_conditions_are_remembered_so_the_background_looks_at_the_same_thing
         assert piece in url, f"배경 재점검이 조건을 잃었습니다: {url}"
 
 
-def test_the_alert_button_reopens_the_same_conditions(tmp_path):
+def test_the_alert_button_reopens_the_same_conditions(tmp_path, monkeypatch):
     """★조건을 빼고 다시 열면 방금 들은 것과 다른 목록이 뜬다★ — 그 순간 알림이
     거짓이 된다."""
+    monkeypatch.setattr(core, "now_ts", lambda: "2026-09-09T00:00:00+00:00")
     brain = LiteMemoryProvider(tmp_path / "brain")
     plugin = FlightsPlugin()
     core.remember_search(brain, "u1", "ICN", "Tokyo",
@@ -1140,7 +1143,7 @@ def test_the_declared_parameters_are_all_actually_used():
 
     선언한 칸이 **조건 덩어리에 실제로 실리는지**를 묻는다.
     """
-    declared = set(FlightsPlugin.parameters["properties"]) - {"action"}
+    declared = set(FlightsPlugin.parameters["properties"]) - {"action", "index", "revision", "currency", "previous_currency"}
     trip = core.trip_of({k: "x" for k in declared})
     carried = {"origin": trip.origin, "destination": trip.destination,
                "depart": trip.depart, "return_on": trip.return_on,

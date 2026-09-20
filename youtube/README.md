@@ -22,8 +22,8 @@ This keeps that part.
 - **Privacy is fail-closed.** Anything not exactly `unlisted` or `public`
   becomes `private`, and if what you asked for was not recognised it says so in
   the answer. Nothing goes public by a typo.
-- **One click connects everything.** The same button covers searching and
-  uploading — one allow screen, not two, and nothing to paste anywhere.
+- **Connection and permission are separate.** The current Connect button obtains
+  API access. Permission to search does not grant permission to publish.
 - **On the watching side, it keeps channels, not videos.** And only ones you
   come back to.
 
@@ -56,6 +56,19 @@ any of them.
 | `media.publish` | ★The one that matters.★ Everything else reads other people's things; this one puts something into the world under your name. |
 | `browser` | To open a video when you ask it to play one. It hands that to Cosmos's own browser tool rather than opening things itself. |
 | `memory` | Without it there is no point to any of this — every publish would be the first publish. |
+
+The development version declares permissions per action: search, info, summarize
+and trending require `network` + `memory`; play also requires `browser`; upload
+requires `network` + `memory` + `media.publish`. The saved workspace requires
+`memory`. The underlying browser tool applies its own permissions when opening a
+video. On a core supporting this new contract, disabling publication keeps reading
+available and reading does not ask for publication approval. Existing released cores
+still check the complete agent permission set; this change has not been released.
+
+Account integration and upload verification are deferred until the final integration
+stage. Working together in a signed-in website, one-time API authorization for
+background work, and a combination of both remain options to evaluate. The current
+implementation uses the API; automated Studio uploads are not implemented.
 
 ## What it does NOT do
 
@@ -146,3 +159,32 @@ registration is missing on our side, not yours. See
 
 Open an issue at
 <https://github.com/honeyground-org/cosmos-agents/issues>.
+
+### Visual workspace follow-up (2026-09-09, unreleased)
+
+Search/details retain API-provided thumbnails and use the new `prepare_agent_images`
+context contract to deliver bounded raster data. Images stay in the account workspace;
+view refreshes make no external requests. Failed/missing thumbnails use a labeled fallback.
+The new image contract is not included in the previously published core.
+
+The publication chart counts the latest 12 uploads already recorded by Cosmos, by date
+and visibility. It is not a view-count or channel-performance chart. Motion can be paused
+and respects reduced-motion/hidden-view state. This pass has 110 passing agent tests.
+
+### Independent display follow-up (2026-09-11, unreleased)
+
+Choose **Channel and references** or **Focus on research** inside the agent's own
+workspace. Research puts the results beside the selected video's image, details
+and description-based summary. Layout is saved per user and restored on reopening.
+The original window keeps its draft; a new window restores saved results and layout.
+
+On the matching development core and Electron shell, display placement can be
+`screen`, `window` or `browser`: integrated Cosmos, a separate app window, or the
+OS browser. On web, both separate destinations use browser windows/tabs.
+Cosmos hosts and authenticates the view; this agent owns its HTML/CSS and interaction.
+A local app can authorize a browser with a short-lived one-use link. Google account
+integration remains separate and deferred; the setup section above describes the
+existing combined connection, whose read/upload scope separation is still pending.
+
+117 agent tests and isolated installation/display checks pass. Real Google accounts,
+packaged-app OS browser launch and published updates remain unverified.

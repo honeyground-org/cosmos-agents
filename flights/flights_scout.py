@@ -65,9 +65,15 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
+from datetime import date
 
 import flights_i18n as i18n
-from cosmos.contracts import Plugin, ToolContext
+import flights_viewer  # Load siblings while the installed entry path is available.
+from hashlib import sha256
+from uuid import uuid4
+from urllib.parse import urlsplit
+
+from cosmos.contracts import Plugin, ToolContext, hooks
 from cosmos.contracts.memory import (Entity, MemoryItem, Relation, Trust,
                                      entity_links, now_ts)
 # ★신호 어휘의 주인은 **화면 계약**이다★ 우리가 이름을 지어내면 화면이 무엇을
@@ -80,7 +86,10 @@ CHANNEL = "flights.v1"
 ITEM_KIND = "flight"
 
 ACTIONS: dict[str, dict] = {
+    "settings": {"desc": "set the currency for future flight searches"},
     "search":  {"desc": "find flights for a route"},
+    "nearby": {"desc": "compare nearby departure dates for the current trip"},
+    "open": {"desc": "open a selected flight listing; never book"},
     "next":    {"desc": "show the next few from the list already on screen"},
     "prev":    {"desc": "go back one page"},
     "plans":   {"desc": "what trips you have been looking at"},
@@ -176,7 +185,7 @@ _EXTRACT = (
     '(airport code if shown), "depart": str (YYYY-MM-DD or empty),\n'
     ' "leaves": str (departure clock time exactly as printed, e.g. "7:10 AM" or '
     '"19:25"), "arrives": str (arrival time, same form),\n'
-    ' "stops": int, "duration_minutes": int (total travel time, 0 if not shown),\n'
+    ' "stops": int (-1 if unknown), "duration_minutes": int (total travel time, 0 if not shown),\n'
     ' "price": int (digits only, 0 if the page says the price is unavailable), '
     '"currency": "KRW"|"USD"|…,\n'
     ' "fare_type": "round_trip" | "one_way" | "" (what the price covers -- leave it\n'
@@ -228,7 +237,7 @@ class Flight:
     # "HH:MM" 24시로 둔다(비면 모르는 것이다). 날짜는 `depart`가 진다.
     leaves: str = ""
     arrives: str = ""
-    stops: int = 0
+    stops: int = -1
     minutes: int = 0
     # ★이 값이 **무엇을 덮는가**★ `round_trip` · `one_way` · 빈 문자열(모른다).
     # 돈에 관한 것이라 ★모르면 모른다고 둔다★ — 왕복으로 찾았다고 편도 값을
@@ -315,7 +324,9 @@ def matches_trip(flight: "Flight", trip: Trip) -> bool:
     ★모르는 것은 안 버린다★ 값이 무엇을 덮는지 결과에 안 적힌 경우가 흔한데, 그것까지
     버리면 왕복 검색은 거의 언제나 빈손이 된다.
     """
-    if trip.nonstop and flight.stops:
+    if trip.depart and flight.depart and trip.depart != flight.depart:
+        return False
+    if trip.nonstop and flight.stops != 0:
         return False
     if trip.round_trip and flight.fare_type == "one_way":
         return False
@@ -368,7 +379,8 @@ def route_name(origin: str, destination: str, depart: str = "", *,
     extra = [f"with {_place(airline)}"] if str(airline or "").strip() else []
     if nonstop:
         extra.append("nonstop")
-    return f"{name} {', '.join(extra)}" if extra else name
+    name = f"{name} {', '.join(extra)}" if extra else name
+    return name if len(name) <= 120 else name[:95] + ":" + sha256(name.casefold().encode()).hexdigest()[:20]
 
 
 def route_name_of(trip: Trip) -> str:
@@ -412,7 +424,7 @@ def to_flights(raw, *, now: str = "") -> list[Flight]:
             depart=str(row.get("depart") or "").strip(),
             leaves=_clock(row.get("leaves")),
             arrives=_clock(row.get("arrives")),
-            stops=_int(row.get("stops")),
+            stops=int(row["stops"]) if str(row.get("stops", "")).isdigit() else -1,
             minutes=_int(row.get("duration_minutes")),
             fare_type=_fare_type(row.get("fare_type")),
             price=_int(row.get("price")),
@@ -641,7 +653,7 @@ def rank(flights: list[Flight]) -> list[Flight]:
     애초에 없어지고, 마음에 드는 게 없을 때 사용자가 같은 검색을 다시 해야 한다.
     """
     ordered = sorted(flights,
-                     key=lambda f: (f.price == 0, f.price, f.stops,
+                     key=lambda f: (f.currency, f.fare_type, f.price == 0, f.price, f.stops < 0, f.stops,
                                     f.airline))[:MAX_KEPT]
     pick = best_pick(ordered)
     if pick is None or ordered.index(pick) == 0:
@@ -658,8 +670,8 @@ def best_pick(flights: list[Flight]) -> Flight | None:
     값을 아는 것만 본다(모르는 값을 밀면 사용자는 눌러 보고서야 안다).
     하나도 값을 모르면 None — ★없으면 없다고 한다★.
     """
-    priced = [f for f in flights if f.price > 0]
-    if not priced:
+    priced = [f for f in flights if f.price > 0 and f.stops >= 0]
+    if not priced or len({(f.currency, f.fare_type) for f in priced}) != 1:
         return None
     fewest = min(f.stops for f in priced)
     return min((f for f in priced if f.stops == fewest), key=lambda f: f.price)
@@ -682,7 +694,7 @@ def pick_reason(flights: list[Flight], pick: Flight | None) -> str:
 def cheapest(flights: list[Flight]) -> Flight | None:
     """값을 아는 것 중 가장 싼 것. 하나도 모르면 None."""
     priced = [f for f in flights if f.price > 0]
-    return min(priced, key=lambda f: f.price) if priced else None
+    return min(priced, key=lambda f: f.price) if priced and len({(f.currency, f.fare_type) for f in priced}) == 1 else None
 
 
 def cheapest_index(items: list[dict]) -> int:
@@ -692,6 +704,8 @@ def cheapest_index(items: list[dict]) -> int:
     *"최저가"* 를 달면 다음 쪽에 더 싼 것이 있을 때 그 글자가 거짓이 된다(쇼핑에서
     찍어 보고 알았다). 전체를 아는 쪽이 판정한다.
     """
+    if len({(i.get("currency"), i.get("fare_type")) for i in items if i.get("price", 0) > 0}) != 1:
+        return -1
     best, at = 0, -1
     for n, item in enumerate(items):
         if not isinstance(item, dict):
@@ -761,7 +775,7 @@ def when_text(leaves, arrives) -> str:
     return start or end
 
 
-def duration_text(minutes) -> str:
+def duration_text(minutes, *, lang=None) -> str:
     """소요 시간을 사람이 읽는 모양으로. 모르면 빈 문자열(0을 '0분'으로 쓰면 거짓말).
 
     ★서식도 언어를 탄다★ 'h'·'m'을 박아 두면 다른 언어에서 그대로 남는다.
@@ -774,19 +788,21 @@ def duration_text(minutes) -> str:
         return ""
     hours, mins = divmod(total, 60)
     if hours and mins:
-        return i18n.t("{h}h {m}m", h=hours, m=mins)
-    return i18n.t("{h}h", h=hours) if hours else i18n.t("{m}m", m=mins)
+        return i18n.t("{h}h {m}m", h=hours, m=mins, lang=lang)
+    return i18n.t("{h}h", h=hours, lang=lang) if hours else i18n.t("{m}m", m=mins, lang=lang)
 
 
-def stops_text(stops) -> str:
+def stops_text(stops, *, lang=None) -> str:
     """갈아타는 횟수를 말로. ★0은 '0번'이 아니라 '직항'이다★"""
+    if stops is None or str(stops).startswith("-"):
+        return ""
     try:
         count = max(0, int(stops or 0))
     except (TypeError, ValueError):
         count = 0
     if not count:
-        return i18n.t("Nonstop")
-    return i18n.t("{n} stop", n=count) if count == 1 else i18n.t("{n} stops", n=count)
+        return i18n.t("Nonstop", lang=lang)
+    return i18n.t("{n} stop", n=count, lang=lang) if count == 1 else i18n.t("{n} stops", n=count, lang=lang)
 
 
 def price_change(before: int, after: int) -> dict:
@@ -917,7 +933,7 @@ def compare_with_past(past: dict, fresh: list[Flight], *, now: str = "") -> dict
                 "was": 0, "now": now_best.price if now_best else 0}
     stale = _days_between(str(past.get("seen_at") or ""),
                           now or now_ts()) > STALE_AFTER_DAYS
-    if stale or now_best is None:
+    if stale or now_best is None or past.get("currency") != now_best.currency or past.get("fare_type", "") != now_best.fare_type:
         return {**base, "first_time": False, "delta": None, "stale": stale,
                 "was": int(past.get("price") or 0),
                 "now": now_best.price if now_best else 0}
@@ -975,6 +991,8 @@ def headline(route: str, flights: list[Flight], diff: dict) -> str:
                       amount=money(delta, unit))
     elif diff.get("stale"):
         lead = i18n.t("It has been a while since you looked at this one. ")
+    if best_pick(flights) is None:
+        return lead + where + "\n" + i18n.t("I lined up {count} of them on the screen.", count=len(flights))
     return lead + i18n.t("Best now: {what}, {stops}.",
                          what=where, stops=stops_text(best.stops))
 
@@ -1032,12 +1050,14 @@ def remember_search(brain, user_id: str, origin: str, destination: str,
              "nonstop": bool(trip.nonstop),
              "price": best.price if best else 0,
              "currency": best.currency if best else "",
+             "fare_type": best.fare_type if best else "",
              "seen_at": stamp, "last_searched": stamp}
     if best:
         # ★관측은 읽어서 이어 붙인다★ 리스트 칸은 병합이 아니라 **교체**된다 —
         # 그냥 넘기면 매번 점 하나짜리 이력이 되고, 화면은 영영 선을 못 그린다.
         attrs["history"] = _extend_history(
-            (getattr(known, "attrs", None) or {}).get("history"), stamp, best.price)
+            (getattr(known, "attrs", None) or {}).get("history")
+            if (getattr(known, "attrs", None) or {}).get("currency") == best.currency and (getattr(known, "attrs", None) or {}).get("fare_type", "") == best.fare_type else [], stamp, best.price)
     wish_id = brain.upsert_entity(user_id, Entity(
         name=route[:120], kind="wish", attrs=attrs, valid_from=stamp))
     if not wish_id:
@@ -1082,10 +1102,7 @@ def _wish_of(brain, user_id: str, route: str):
     9월 표의 기억이 12월 표에 붙는다."""
     if brain is None or not route:
         return None
-    try:
-        rows = brain.find_entities(user_id, kind="wish") or []
-    except Exception:
-        return None
+    rows = brain.find_entities(user_id, kind="wish") or []
     for entity in rows:
         if str(getattr(entity, "name", "")).lower() == route.lower():
             return entity
@@ -1105,6 +1122,7 @@ def recall_route(brain, user_id: str, origin: str = "", destination: str = "",
     return {"route": route, "wish_id": getattr(entity, "id", ""),
             "price": int(attrs.get("price") or 0),
             "currency": attrs.get("currency", ""),
+            "fare_type": attrs.get("fare_type", ""),
             "depart": attrs.get("depart", ""),
             "return_on": attrs.get("return_on", ""),
             "airline": attrs.get("airline", ""),
@@ -1188,6 +1206,7 @@ def watchlist(brain, user_id: str, *, now: str = "") -> list[dict]:
                                  nonstop=bool(attrs.get("nonstop"))),
                     "price": int(attrs.get("price") or 0),
                     "currency": attrs.get("currency", ""),
+                    "fare_type": attrs.get("fare_type", ""),
                     "last_alert": attrs.get("last_alert", ""),
                     "last_checked": attrs.get("last_checked", "")})
     return out
@@ -1254,18 +1273,49 @@ def remember_check(brain, user_id: str, wish_id: str, *,
 # 화면이 읽을 것을 두는 자리. ★코드가 아니라 **상태**의 자리다★ — `data_dir`가
 # 그 둘을 갈라 두므로 에이전트를 업데이트해도 보던 목록이 지워지지 않는다.
 
+def _user(ctx):
+    return str(getattr(ctx, "user_id", "") or "local")
+
+
+def _state_path(ctx):
+    # Ownerless files cannot safely be assigned to a signed-in account.
+    return ctx.data_dir("flights") / (sha256(_user(ctx).encode()).hexdigest() + "." + _STATE_FILE)
+
+
 def _save(ctx: ToolContext, state: dict) -> None:
-    (ctx.data_dir("flights") / _STATE_FILE).write_text(
-        json.dumps(state, ensure_ascii=False), encoding="utf-8")
+    if callable(getattr(ctx, "save_agent_state", None)):
+        ctx.save_agent_state("flights", state, "workspace")
+    else:
+        path = _state_path(ctx)
+        temporary = path.with_suffix("." + uuid4().hex + ".tmp")
+        temporary.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
+        temporary.replace(path)
 
 
 def _load(ctx: ToolContext) -> dict:
-    """읽지 못하면 **빈 상태**다 — 화면은 빈 것도 그릴 수 있어야 한다(M-H20)."""
+    if callable(getattr(ctx, "load_agent_state", None)):
+        data = ctx.load_agent_state("flights", "workspace")
+    else:
+        path = _state_path(ctx)
+        data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    if not isinstance(data, dict):
+        raise ValueError("Invalid workspace")
+    return data
+
+
+def _copy(ctx, key):
+    return flights_viewer.copy_for(getattr(ctx, "lang", "en"))[key]
+
+
+def safe_url(value):
     try:
-        path = ctx.data_dir("flights") / _STATE_FILE
-        return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
-    except Exception:
-        return {}
+        url = str(value or "")
+        part = urlsplit(url)
+        if len(url) <= 2048 and part.scheme == "https" and part.hostname and not part.username and not part.password and not any(ord(c) < 33 for c in url):
+            return url
+    except ValueError:
+        pass
+    return ""
 
 
 def _only_json(text: str) -> str:
@@ -1324,7 +1374,7 @@ class FlightsPlugin(Plugin):
         "Show the next ones",
         "I booked it",
     )
-    version = "0.4.0"
+    version = "0.5.0"
     author = "cosmos"
     # ★모델이 이 글을 읽고 **자기를 부를지 말지** 정한다★ (2026-08-23 실사용에서 데였다)
     #
@@ -1351,6 +1401,10 @@ class FlightsPlugin(Plugin):
             "action": {"type": "STRING",
                        "description": " | ".join(f"{k} — {v['desc']}"
                                                  for k, v in ACTIONS.items())},
+            "index": {"type": "INTEGER", "description": "1-based flight number for open."},
+            "revision": {"type": "STRING", "description": "Workspace revision for screen actions."},
+            "currency": {"type": "STRING", "description": "Currency setting: empty, KRW, USD, JPY, EUR, GBP or CNY."},
+            "previous_currency": {"type": "STRING", "description": "Previously displayed currency; rejects a stale settings edit."},
             "origin": {"type": "STRING", "description": "Where from — city or airport code."},
             "destination": {"type": "STRING", "description": "Where to — city or airport code."},
             "depart": {"type": "STRING",
@@ -1378,6 +1432,11 @@ class FlightsPlugin(Plugin):
     # `browser.act`는 ★날짜 표 하나 때문★이다: 그 표는 주소로 안 열리고 눌러야 한다.
     # 없어도 항공편 검색은 그대로 돌고, 더 싼 날 비교만 빠진다.
     capabilities = ["network", "memory", "browser", "browser.act"]
+    default_action = "search"
+    action_capabilities = {a: ["memory"] for a in ACTIONS}
+    action_capabilities["search"] = ["memory", "network", "browser"]
+    action_capabilities["nearby"] = ["memory", "network", "browser", "browser.act"]
+    view_capabilities = ["memory"]
     requires_desktop = False
     view_title = "Flights"
 
@@ -1391,7 +1450,7 @@ class FlightsPlugin(Plugin):
     # 되고, 그것을 결함으로 읽게 된다. 부르는 쪽이 오늘을 기준으로 채운다.
     probe = {"args": {"action": "search", "origin": "Seoul", "destination": "Tokyo"},
              # 화면에 비교 카드가 서야 진짜로 찾은 것이다(말만으로는 알 수 없다)
-             "needs": ("compare",),
+             "needs": ("html",),
              # 페이지를 열고 모델이 옮기는 데 드는 시간 — 이보다 오래면 대화에서는 실패다
              "sec": 45}
 
@@ -1402,9 +1461,9 @@ class FlightsPlugin(Plugin):
     # 통화로 보여 주므로, ★기본값은 "정하지 않음"이 맞다★.
     settings = (
         {"id": "currency", "kind": "choice", "label": "Currency",
-         "options": ["", "KRW", "USD", "JPY", "EUR", "GBP", "CNY"],
-         "default": "",
-         "hint": "Leave empty to use whatever the flight listing shows for you."},
+         "options": ["auto", "KRW", "USD", "JPY", "EUR", "GBP", "CNY"],
+         "default": "auto",
+         "hint": "auto: use the flight listing’s default currency. Changes apply to the next search."},
     )
     # ★이 화면의 성격★(Sean 요구 2026-08-19) 넷을 나란히 놓고 **값으로** 고르는
     # 화면이다. 눈이 카드 사이를 오가야 하므로 넉넉해야 한다.
@@ -1437,7 +1496,7 @@ class FlightsPlugin(Plugin):
     def __init__(self) -> None:
         super().__init__()
         # 지금 떠 있는 알림들 — ★내리는 것이 알림의 절반이다★
-        self._raised: set[str] = set()
+        self._raised: dict[str, set[str]] = {}
 
     # -- 라우팅 ---------------------------------------------------------------
     def run(self, ctx: ToolContext, **args) -> str:
@@ -1445,6 +1504,38 @@ class FlightsPlugin(Plugin):
         if action not in ACTIONS:
             action = DEFAULT_ACTION
         try:
+            if action == "settings":
+                currency = args.get("currency")
+                if not isinstance(currency, str) or currency not in ("", *self.settings[0]["options"]):
+                    return _copy(ctx, "settings_invalid")
+                if "previous_currency" in args and args["previous_currency"] != self._currency(ctx):
+                    return _copy(ctx, "settings_stale")
+                from cosmos.core import agent_settings
+                result = agent_settings.save(self.name, self, {"currency": currency or "auto"}, user_id=_user(ctx))
+                if "currency" not in result["saved"]:
+                    return _copy(ctx, "settings_invalid")
+                return _copy(ctx, "settings_saved")
+            if args.get("revision") and args["revision"] != _load(ctx).get("revision"):
+                return _copy(ctx, "stale")
+            if action == "open":
+                state = _load(ctx)
+                index = int(args.get("index", 0)) - 1
+                items = state.get("items") or []
+                if index < 0 or index >= len(items):
+                    return _copy(ctx, "stale")
+                url = safe_url(items[index].get("url"))
+                if not url:
+                    return _copy(ctx, "no_link")
+                return ctx.run_tool("browser_control", {"url": url})
+            if action == "nearby":
+                state = _load(ctx)
+                if not state.get("items") or not state.get("depart"):
+                    return _copy(ctx, "date_needed")
+                found = [Flight(**{k: row[k] for k in Flight.__dataclass_fields__ if k in row}) for row in state["items"]]
+                state["nearby"] = self._other_days(ctx, trip_of(state), found)
+                state["notice"] = _copy(ctx, "nearby_done" if state["nearby"] else "nearby_unavailable")
+                _save(ctx, state)
+                return state["notice"]
             if action == "plans":
                 return self._plans(ctx)
             if action in self._PAGE_ACTIONS:
@@ -1455,32 +1546,71 @@ class FlightsPlugin(Plugin):
                 return self._forget(ctx, args)
             return self._search(ctx, args)
         except Exception as e:
-            return i18n.t("The flight search did not work: {detail}", detail=e)
+            ctx.write_log(f"[flights] action failed: {type(e).__name__}")
+            message = _copy(ctx, "error")
+            try:
+                state = _load(ctx)
+                state["notice"] = message
+                _save(ctx, state)
+            except Exception:
+                pass
+            return i18n.t("The flight search did not work: {detail}", detail=message)
 
     # -- 검색 -----------------------------------------------------------------
     def _search(self, ctx: ToolContext, args: dict) -> str:
+        previous = _load(ctx)
+        # Repeating the same trip without new conditions means continue it.
+        if previous.get("destination") and all(k not in args for k in ("depart", "return_on", "airline", "nonstop")) and all(str(args.get(k, previous.get(k, ""))).casefold() == str(previous.get(k, "")).casefold() for k in ("origin", "destination")):
+            args = {**{k: previous.get(k) for k in ("origin", "destination", "depart", "return_on", "airline", "nonstop")}, **args}
+        for key in ("depart", "return_on"):
+            if args.get(key):
+                try:
+                    date.fromisoformat(str(args[key]))
+                except ValueError:
+                    return _copy(ctx, "dates_invalid")
         trip = trip_of(args)
         if not trip.destination:
             return i18n.t("Tell me where you want to fly to.")
+        if trip.return_on and (not trip.depart or trip.return_on < trip.depart):
+            return _copy(ctx, "dates_invalid")
         route = route_name_of(trip)
         ctx.write_log(f"[flights] {route}")
 
         brain = getattr(ctx, "brain", None)
         uid = str(getattr(ctx, "user_id", "") or "local")
-        past = recall_route(brain, uid, trip=trip)
+        memory_read = True
+        try:
+            past = recall_route(brain, uid, trip=trip)
+        except Exception:
+            past, memory_read = {}, False
         found, dropped, trouble = self._find(ctx, trip)
         found = rank(found)
         if not found:
-            return self._nothing(route, trip, dropped, trouble)
-        if brain is not None:
-            self._remember(ctx, trip, found)
+            message = self._nothing(route, trip, dropped, trouble)
+            if trouble:
+                state = _load(ctx)
+                state["notice"] = message
+                _save(ctx, state)
+            else:
+                self._remember_view(ctx, route, [], {}, {}, trip, [])
+                state = _load(ctx)
+                state["notice"] = message
+                _save(ctx, state)
+            return message
+        remembered = self._remember(ctx, trip, found) if brain is not None and memory_read else False
         diff = compare_with_past(past, found)
         # ★날짜를 바꿔 본다★ — 사람이 표를 살 때 하는 그 일(Sean 요구 2026-08-21).
         # 못 하면 빈 목록이고, 그래도 검색은 그대로 산다.
-        nearby = self._other_days(ctx, trip, found)
+        nearby = [] if callable(getattr(ctx, "load_agent_state", None)) else self._other_days(ctx, trip, found)
         # ★화면과 말이 **같은 판정**을 본다★ 두 곳에서 판정하면 서로 다른 것을 말한다.
         self._remember_view(ctx, route, found, past, diff, trip, nearby)
-        return self._say(route, found, diff, nearby)
+        answer = self._say(route, found, diff, nearby)
+        if not remembered:
+            state = _load(ctx)
+            state["notice"] = _copy(ctx, "memory_error")
+            _save(ctx, state)
+            answer += "\n" + state["notice"]
+        return answer
 
     def _other_days(self, ctx: ToolContext, trip: Trip,
                     found: list[Flight]) -> list[dict]:
@@ -1492,16 +1622,19 @@ class FlightsPlugin(Plugin):
         best = cheapest(found)
         if not trip.depart or best is None or not best.price:
             return []
+        if callable(getattr(ctx, "load_agent_state", None)) and (trip.airline or trip.nonstop or best.fare_type != ("round_trip" if trip.return_on else "one_way")):
+            # Grid labels do not prove that airline/stops filters were applied.
+            return []
         page = ctx.read_page(flights_url(trip, currency=self._currency(ctx)),
                              click=DATE_GRID_BUTTON, targets=GRID_TARGETS,
                              settle=GRID_SETTLE_SEC)
         if not page.get("ok"):
-            ctx.write_log(f"[flights] no date grid: {page.get('why') or 'unknown'}")
+            ctx.write_log(f"[flights] no date grid: {'unavailable'}")
             return []
         if page.get("why"):
             # 읽히긴 했는데 표를 못 열었다 — 열렸을 때와 구별해 남긴다
-            ctx.write_log(f"[flights] date grid: {page['why']}")
-        grid = read_date_grid(page.get("targets") or (), around=trip.depart)
+            ctx.write_log(f"[flights] date grid: {'unavailable'}")
+        grid = [r for r in read_date_grid(page.get("targets") or (), around=trip.depart) if r["currency"] == best.currency and (bool(r["back"]) == bool(trip.return_on) or not callable(getattr(ctx, "load_agent_state", None)))]
         cheaper = cheaper_days(grid, than=best.price, on=trip.depart,
                                back=trip.return_on)
         # ★읽은 칸 수를 남긴다★ *"더 싼 날 없음"* 은 두 가지 뜻이다 — 표를 읽었는데
@@ -1568,13 +1701,13 @@ class FlightsPlugin(Plugin):
             # ★왜 못 봤는지를 로그에 남긴다★ 빈손만 남기면 다음 사람은 *"항공편이
             # 없었나 보다"* 로 읽는다 — 브라우저가 안 뜬 것과 결과가 없는 것은 다르다.
             ctx.write_log(f"[flights] could not open the listing: "
-                          f"{page.get('why') or 'unknown'}")
+                          f"{'unavailable'}")
             return [], 0, "open"
         body = str(page.get("text") or "")
         try:
             moved = ctx.think(f"{_EXTRACT}\n\nFlight results page:\n{body[:6000]}")
         except Exception as e:
-            ctx.write_log(f"[flights] could not read the page: {e}")
+            ctx.write_log(f"[flights] could not read the page: {type(e).__name__}")
             return [], 0, "read"
         flights = to_flights(_only_json(moved))
         # ★재료를 세어 남긴다★ (Sean 지적 2026-08-23 · [[empty-hands-need-a-count]])
@@ -1590,11 +1723,19 @@ class FlightsPlugin(Plugin):
             return [], 0, "read"
         # ★모델이 엉뚱한 노선을 섞어 오면 버린다★ 우리가 물은 곳으로 가는 것만 남긴다.
         #
-        # ⚠️ ★공항 코드로 오는 것이 정상이 되었다★(2026-08-21) 목록 페이지는 목적지를
-        # `NRT`·`HND`로 적지 *"Tokyo"* 라고 적지 않는다. 이름으로만 맞추면 **전부
-        # 버리고** 빈손이 된다 — 그래서 이름이 안 맞으면 통째로 살린다(아래 `or`).
-        wanted = _place(trip.destination).lower()
-        on_route = [f for f in flights if wanted in f.destination.lower()] or flights
+        # City-to-airport aliases still need source verification. An explicit
+        # conflicting city/code is not a fallback result for the requested trip.
+        def compatible(wanted, actual):
+            wanted, actual = _place(wanted).casefold(), _place(actual).casefold()
+            if not wanted or not actual:
+                return True
+            if wanted == actual:
+                return True
+            if _IATA.fullmatch(wanted.upper()) and _IATA.fullmatch(actual.upper()):
+                return False
+            # City-to-airport aliases need source verification; reject explicit city conflicts.
+            return bool(_IATA.fullmatch(wanted.upper()) or _IATA.fullmatch(actual.upper()))
+        on_route = [f for f in flights if compatible(trip.destination, f.destination) and compatible(trip.origin, f.origin)]
         # ★조건은 **우리가** 건다★ 주소에 넣는 것만으로는 안 걸린다 — 페이지는 비슷한
         # 것을 넉넉히 보여 주고, 모델은 그것을 옮기기만 한다(판정은 우리 코드다).
         kept = [f for f in on_route if matches_trip(f, trip)]
@@ -1610,10 +1751,10 @@ class FlightsPlugin(Plugin):
         """
         try:
             from cosmos.core import agent_settings
-            got = agent_settings.get("flights", "currency", "")
+            got = agent_settings.get("flights", "currency", "", user_id=_user(ctx))
         except Exception:
             return ""
-        return str(got or "").strip().upper()
+        return "" if str(got).lower() == "auto" else str(got or "").strip().upper()
 
     # -- 계획 -----------------------------------------------------------------
     def _plans(self, ctx: ToolContext) -> str:
@@ -1637,9 +1778,7 @@ class FlightsPlugin(Plugin):
         """★사용자의 결정이 이긴다★ 그만 보겠다고 하면 그 노선을 철회한다."""
         brain = getattr(ctx, "brain", None)
         uid = str(getattr(ctx, "user_id", "") or "local")
-        route = route_name(str(args.get("origin") or ""),
-                           str(args.get("destination") or ""),
-                           str(args.get("depart") or ""))
+        route = route_name_of(trip_of(args))
         if brain is None or not route:
             return i18n.t("Tell me which route to stop tracking.")
         gone = 0
@@ -1650,6 +1789,8 @@ class FlightsPlugin(Plugin):
         # ★지켜보기를 그만두면 그 알림도 지금 내린다★ 안 내리면 사용자는 방금 지운
         # 것에 대한 말을 계속 듣고, 그때 "그만두기"는 동작하지 않는 것으로 읽힌다.
         self._clear(ctx, self._notice_key(route))
+        if gone and _load(ctx).get("route") == route:
+            _save(ctx, {})
         return (i18n.t("I will stop tracking {route}.", route=route) if gone
                 else i18n.t("I was not tracking {route}.", route=route))
 
@@ -1664,14 +1805,16 @@ class FlightsPlugin(Plugin):
         uid = str(getattr(ctx, "user_id", "") or "local")
         # ★말할 때는 노선을 다시 안 댄다★ *"응 끊었어"* 라고만 하므로, 방금 보던
         # 것이 무엇인지는 화면 상태가 안다(사람에게 다시 대라고 하면 안 쓴다).
-        route = route_name(str(args.get("origin") or ""),
-                           str(args.get("destination") or ""),
-                           str(args.get("depart") or "")) or _load(ctx).get("route", "")
+        route = route_name_of(trip_of(args)) or _load(ctx).get("route", "")
         if brain is None or not route:
             return i18n.t("Which trip do you mean?")
         outcome = "" if action == "still_looking" else action
         if not remember_outcome(brain, uid, route, outcome):
             return i18n.t("I am not tracking {route}.", route=route)
+        state = _load(ctx)
+        if state.get("route") == route:
+            state["outcome"] = action
+            _save(ctx, state)
         # 끊었거나 접었으면 그 노선의 알림은 지금 내려간다
         if outcome:
             self._clear(ctx, self._notice_key(route))
@@ -1704,6 +1847,15 @@ class FlightsPlugin(Plugin):
                       page=page + 1, pages=pages)
 
     # -- ★값이 내리면 먼저 말한다★ -------------------------------------------
+    def _may_check(self, ctx):
+        from cosmos.contracts import hooks
+        from cosmos.core import agents, capabilities, permissions, userstate
+        with userstate.scope(ctx.user_id):
+            return (hooks.enabled(self, "notice", ctx.user_id)
+                    and not agents.is_removed(self.name, user_id=ctx.user_id)
+                    and capabilities.is_allowed(self, args={"action": "search"},
+                                                blocked_capabilities=permissions.effective_blocked()))
+
     def advise(self, ctx: ToolContext) -> None:
         """배경에서 지켜보다 **싸졌을 때** 알린다 — 그리고 해소되면 스스로 내린다.
 
@@ -1719,6 +1871,8 @@ class FlightsPlugin(Plugin):
         지나면** 그 노선은 `watchlist`에서 빠지고, 그 순간 이 함수가 알림을
         내린다. 내려가지 않는 알림은 두 번째부터 무시당한다.
         """
+        if not self._may_check(ctx):
+            return
         brain = getattr(ctx, "brain", None)
         if brain is None or not callable(getattr(ctx, "notice", None)):
             return
@@ -1730,7 +1884,7 @@ class FlightsPlugin(Plugin):
 
         # ★해소되면 스스로 내려간다★ 지켜볼 것에서 빠진 노선의 알림은 여기서 사라진다.
         open_keys = {self._notice_key(row["route"]) for row in watching}
-        for key in list(self._raised - open_keys):
+        for key in list(self._raised.setdefault(uid, set()) - open_keys):
             self._clear(ctx, key)
 
         row = next((r for r in watching if due_for_recheck(r["last_checked"])), None)
@@ -1754,13 +1908,22 @@ class FlightsPlugin(Plugin):
             fresh = rank(self._find(ctx, trip)[0])
         except Exception:
             return
+        # A provider request can finish after the agent or notice hook is disabled.
+        if not self._may_check(ctx):
+            return
+        try:
+            current = next((r for r in watchlist(brain, uid) if r["wish_id"] == row["wish_id"]), None)
+        except Exception:
+            return
+        if current is None or current != row:
+            return  # Bought/booked, removed, or changed while the provider was working.
         best = cheapest(fresh)
         if best is None:
             remember_check(brain, uid, row["wish_id"])
             return
         # ★통화가 바뀌면 값을 견주지 않는다★ 89만 KRW와 690 USD를 빼면 그 숫자는
         # 아무 뜻이 없고, 그 숫자로 "내렸다"고 말하면 그것은 거짓말이다.
-        if row["currency"] and best.currency and row["currency"] != best.currency:
+        if row["currency"] != best.currency or row.get("fare_type", "") != best.fare_type:
             remember_check(brain, uid, row["wish_id"])
             return
 
@@ -1776,7 +1939,7 @@ class FlightsPlugin(Plugin):
             remember_search(brain, uid, trip.origin, trip.destination, fresh,
                             trip=trip, agent=self)
         except Exception:
-            pass
+            return
         ctx.notice(
             self._notice_key(row["route"]),
             # ★말로 나가는 줄이다★ 읽는 글이 아니라 **하는 말**로 쓴다
@@ -1796,30 +1959,31 @@ class FlightsPlugin(Plugin):
                              "destination": trip.destination,
                              "depart": trip.depart, "return_on": trip.return_on,
                              "airline": trip.airline, "nonstop": trip.nonstop}})
-        self._raised.add(self._notice_key(row["route"]))
+        self._raised.setdefault(uid, set()).add(self._notice_key(row["route"]))
         remember_check(brain, uid, row["wish_id"], alerted=True)
 
     @staticmethod
     def _notice_key(route: str) -> str:
         """★노선마다 하나★ 항공편마다 키를 만들면 한 여행으로 알림이 넷 뜬다."""
-        return "fare:" + str(route or "")[:80]
+        return "fare:" + sha256(str(route or "").encode()).hexdigest()[:24]
 
     def _clear(self, ctx: ToolContext, key: str) -> None:
         try:
             ctx.clear_notice(key)
         except Exception:
             pass
-        self._raised.discard(key)
+        self._raised.setdefault(_user(ctx), set()).discard(key)
 
     # -- 화면 -----------------------------------------------------------------
     def view(self, ctx: ToolContext, **params) -> dict:
-        """★비교는 여기서 한다★ 말로는 둘까지, 나머지는 이 화면이 보여준다.
+        """Current cores render the stable workspace; old contexts retain compare blocks.
 
-        ★우리 어휘로 그린다★ 나란히 비교(`compare`)와 값 흐름(`price_history`)은
-        화면 계약에 **이미 있고** 셸도 그릴 줄 안다. 액자(`iframe`)에 넣으면 디자인
-        토큰이 안 닿고, 계측기가 못 찍고, 쪽 넘김이 어려워진다(쇼핑에서 셋 다 겪었다).
+        The shared renderer injects palette/fonts and sends JSON state separately,
+        so polling preserves drafts, selection and the illustration's lifecycle.
         """
         state = _load(ctx)
+        if callable(getattr(ctx, "load_agent_state", None)):
+            return {"title": self.view_title, "blocks": [flights_viewer.block(state, lang=getattr(ctx, "lang", "en"), currency=self._currency(ctx))], "refresh_ms": 5000}
         if not state:
             return {"title": self.view_title,
                     "blocks": [{"type": "text", "tone": "muted",
@@ -1857,7 +2021,7 @@ class FlightsPlugin(Plugin):
         # 위 제목이 이미 그 날을 말하는데 카드 넷이 같은 날짜를 또 적고 있었고,
         # 그 한 조각이 이유 문장을 밀어내 카드 밖으로 잘랐다.
         days = {_date(i.get("depart", "")) for i in items}
-        cards = [self._card(item, base + n, lead=(base + n == 0),
+        cards = [self._card(item, base + n, lead=(base + n == 0 and state.get("pick_available", True)),
                             low=(base + n == low), with_day=len(days) > 1)
                  for n, item in enumerate(shown)]
         blocks.append({"type": "compare",
@@ -2032,21 +2196,27 @@ class FlightsPlugin(Plugin):
         history = list(past.get("history") or [])
         best = cheapest(flights)
         if best:
+            if past.get("currency") != best.currency or past.get("fare_type", "") != best.fare_type:
+                history = []
             history = _extend_history(history, best.seen_at, best.price)
+        else:
+            history = []
         pick = best_pick(flights)
         reason = pick_reason(flights, pick)
         try:
             _save(ctx, {
                 # ★새 검색은 **첫 쪽부터**★ 3쪽을 보던 중에 다른 노선을 찾으면,
                 # 쪽수가 남아 있어 새 목록의 9번째부터 보인다(고장으로 읽힌다).
-                "route": route, "depart": trip.depart,
+                "route": route, "depart": trip.depart, "destination": trip.destination,
+                "revision": uuid4().hex,
+                "outcome": "booked" if past.get("booked_at") else "dropped" if past.get("dropped_at") else "still_looking",
                 # ★출발지도 적는다★ 더 싼 날 단추가 이것 없이 다시 찾으면 *"어디서든
                 # 도쿄"* 가 되어 **다른 노선의 값**을 가져온다(항공편 줄에서 되찾을
                 # 수도 있지만, 그것은 공항 코드라 사용자가 말한 것과 다를 수 있다).
                 "origin": trip.origin,
                 "return_on": trip.return_on, "airline": trip.airline,
                 "nonstop": bool(trip.nonstop), "diff": diff,
-                "history": history, "page": 0,
+                "history": history, "page": 0, "pick_available": pick is not None,
                 # ★더 싼 날은 **화면도** 봐야 한다★ 말로만 하면 흘러가 버린다 —
                 # 날짜를 바꾸는 것은 값을 보고 **결정하는** 일이라 눈에 남아야 한다.
                 "nearby": list(nearby or []),
@@ -2056,14 +2226,15 @@ class FlightsPlugin(Plugin):
                            "stops": f.stops, "minutes": f.minutes,
                            "fare_type": f.fare_type,
                            "price": f.price, "currency": f.currency,
-                           "note": f.note, "seen_at": f.seen_at, "url": f.url,
+                           "note": f.note, "seen_at": f.seen_at, "url": safe_url(f.url),
                            # ★미는 이유를 **그 줄에** 적는다★ 이유 없는 순위는
                            # 광고와 구별되지 않는다(화면이 다시 판정하지 않는다)
                            "reason": reason if f is pick else ""}
                           for f in flights]})
         except Exception as e:
             ctx.write_log("[flights] " + i18n.t(
-                "Could not save the screen state: {detail}", detail=e))
+                "Could not save the screen state: {detail}", detail=type(e).__name__))
+            raise
 
     def _say(self, route: str, flights: list[Flight], diff: dict,
              nearby: list[dict] | None = None) -> str:
@@ -2091,14 +2262,13 @@ class FlightsPlugin(Plugin):
 
     # -- 브레인 ---------------------------------------------------------------
     def _remember(self, ctx: ToolContext, trip: Trip,
-                  flights: list[Flight]) -> None:
-        """★기억은 부산물이다★ 실패해도 사용자는 검색 결과를 받는다."""
+                  flights: list[Flight]) -> bool:
+        """검색 결과는 보존하되 기억 실패를 알린다."""
         try:
-            remember_search(ctx.brain, str(getattr(ctx, "user_id", "") or "local"),
-                            trip.origin, trip.destination, flights,
-                            trip=trip, agent=self)
+            return bool(remember_search(ctx.brain, _user(ctx), trip.origin, trip.destination, flights, trip=trip, agent=self))
         except Exception as e:
-            ctx.write_log(f"[flights] could not remember: {e}")
+            ctx.write_log(f"[flights] could not remember: {type(e).__name__}")
+            return False
 
 
 def _headlines(diff: dict) -> list[dict]:

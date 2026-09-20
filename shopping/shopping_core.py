@@ -171,7 +171,8 @@ def due_for_recheck(last_checked: str, *, now: str = "",
 
 
 def worth_interrupting(before: int, after: int, *, last_alert: str = "",
-                       now: str = "") -> dict:
+                       now: str = "", min_ratio: float = ALERT_MIN_RATIO,
+                       min_delta: int = ALERT_MIN_DELTA) -> dict:
     """이 값 변화로 **하던 일을 멈추게 해도 되는가**. ★순수 함수★
 
     돌려주는 것은 판정과 **그 이유**다 — 이유 없는 알림은 광고와 구별되지 않고,
@@ -183,7 +184,7 @@ def worth_interrupting(before: int, after: int, *, last_alert: str = "",
     move = price_change(int(before or 0), int(after or 0))
     if move["direction"] != "down":
         return {"tell": False, "reason": "not_cheaper", **move}
-    if move["ratio"] < ALERT_MIN_RATIO or abs(move["delta"]) < ALERT_MIN_DELTA:
+    if move["ratio"] < min_ratio or abs(move["delta"]) < min_delta:
         return {"tell": False, "reason": "too_small", **move}
     if not _quiet_enough(last_alert, now):
         # ★같은 물건으로 이틀 연속 말을 걸면 두 번째부터는 안 듣는다★
@@ -283,7 +284,7 @@ def rank(candidates: list[Candidate]) -> list[Candidate]:
         rating = float((c.signals or {}).get("rating") or 0)
         # 가격을 모르면 뒤로 — 비교할 수 없는 것을 앞에 두면 비교가 안 된다
         price = c.price if c.price else 10 ** 12
-        return (-round(rating, 1), price, c.title)
+        return (-round(rating, 1), c.currency, price, c.title)
     return sorted(candidates, key=score)[:MAX_KEPT]
 
 
@@ -314,6 +315,8 @@ def cheapest_index(items: list[dict]) -> int:
 
     값이 같은 것이 둘이면 **앞의 것**이다(순위가 이미 정렬해 두었다).
     """
+    if len({item.get("currency", "KRW") for item in items if isinstance(item, dict) and item.get("price")}) > 1:
+        return -1  # No exchange-rate evidence; no cross-currency cheapest claim.
     best, at = 0, -1
     for n, item in enumerate(items):
         if not isinstance(item, dict):
@@ -406,7 +409,7 @@ def migrate_products_once(brain, user_id: str, done_mark=None) -> None:
 
 def remember_search(brain, user_id: str, query: str,
                     candidates: list[Candidate], *, now: str = "",
-                    agent=None) -> str:
+                    agent=None, criteria: str | None = None) -> str:
     """이번 검색을 **기억으로** 남긴다. 만든 `wish` 엔티티의 id를 돌려준다.
 
     ★에이전트 자체 저장소가 아니라 브레인에 두는 것이 요점이다★ — 그래야
@@ -422,7 +425,8 @@ def remember_search(brain, user_id: str, query: str,
     existing = _find_wish(brain, user_id, query)
     wish_id = brain.upsert_entity(user_id, Entity(
         name=existing.name if existing else _wish_name(query), kind="wish",
-        attrs={**trust.to_attrs(), "query": query, "last_searched": stamp},
+        attrs={**trust.to_attrs(), "query": query, "last_searched": stamp,
+               **({"criteria": criteria} if criteria is not None else {})},
         valid_from=stamp))
     if not wish_id:
         return ""                    # 사용자가 지운 항목 — 되살리지 않는다(툼스톤)
@@ -433,15 +437,15 @@ def remember_search(brain, user_id: str, query: str,
         item_id = brain.upsert_entity(user_id, Entity(
             name=c.title[:120], kind=PRODUCT_KIND,
             attrs={**found.to_attrs(), "price": c.price, "currency": c.currency,
-                   "seller": c.seller, "url": c.url, "seen_at": c.seen_at or stamp,
+                   "seller": c.seller, "url": c.url, "note": c.note, "seen_at": c.seen_at or stamp,
                    "affiliate": bool(c.affiliate), "signals": dict(c.signals or {})},
             valid_from=stamp))
         if item_id:
             product_ids.append(item_id)
             brain.upsert_relation(user_id, Relation(
                 src=wish_id, dst=item_id, rel="considering",
-                attrs={**found.to_attrs(), "price": c.price,
-                       "seen_at": c.seen_at or stamp},
+                attrs={**found.to_attrs(), "price": c.price, "currency": c.currency,
+                       "note": c.note, "seen_at": c.seen_at or stamp},
                 valid_from=stamp))
     # ★누가 찾아 온 것인가★(R4) 산출물이 출처 에이전트를 가리킨다 — 그래야
     # *"이건 누가 찾아 온 거야?"* 에 답하고, 그 에이전트를 지울 때 함께 걷어낼 수 있다.
@@ -522,6 +526,10 @@ def recall_search(brain, user_id: str, query: str) -> dict:
         seen.append({
             "title": entity.name,
             "price": int((relation.attrs or {}).get("price") or attrs.get("price") or 0),
+            "currency": (relation.attrs or {}).get("currency") or attrs.get("currency", "KRW"),
+            "note": (relation.attrs or {}).get("note") or attrs.get("note", ""),
+            "bought_at": attrs.get("bought_at", ""),
+            "dropped_at": attrs.get("dropped_at", ""),
             "seller": attrs.get("seller", ""),
             "url": attrs.get("url", ""),
             "seen_at": (relation.attrs or {}).get("seen_at") or attrs.get("seen_at", ""),
@@ -531,7 +539,7 @@ def recall_search(brain, user_id: str, query: str) -> dict:
             "checkout_at": attrs.get("checkout_at", ""),
         })
     return {"query": (wish.attrs or {}).get("query") or query,
-            "wish_id": wish.id,
+            "wish_id": wish.id, "criteria": (wish.attrs or {}).get("criteria", ""),
             "last_searched": (wish.attrs or {}).get("last_searched", ""),
             "candidates": seen}
 
@@ -740,10 +748,12 @@ def compare_with_past(past: dict, fresh: list[Candidate], *, now: str = "") -> d
         new = after.get(key)
         if new is None:
             continue
+        if old.get("currency", "KRW") != new.currency:
+            continue
         move = price_change(int(old.get("price") or 0), int(new.price or 0))
         if move["changed"]:
             changes.append({"title": new.title, "before": old.get("price"),
-                            "after": new.price, **move})
+                            "after": new.price, "currency": new.currency, **move})
     # 큰 변화를 먼저 — 화면과 말 모두 **가장 중요한 것부터** 나와야 한다
     changes.sort(key=lambda c: -abs(c["delta"]))
 
@@ -758,7 +768,7 @@ def compare_with_past(past: dict, fresh: list[Candidate], *, now: str = "") -> d
         # 사용자는 확인할 방법이 없다(품절·단종은 `gone`이 이미 말한다).
         "checked_out": [{"title": after[key].title, "at": old.get("checkout_at", "")}
                         for key, old in before.items()
-                        if old.get("checkout_at") and key in after],
+                        if old.get("checkout_at") and not old.get("bought_at") and not old.get("dropped_at") and key in after],
     }
 
 

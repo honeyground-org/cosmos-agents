@@ -1,141 +1,152 @@
 # Flight finder
 
-Fare search is everywhere. **This one remembers.**
+Keep the trip you are considering, compare the fares you have actually seen,
+and pick a journey that fits your time as well as your budget.
 
-> *"That Tokyo route you were watching — it's 80,000 cheaper than when you looked."*
+> Development update, September 2026: the workspace below is **unreleased**.
+> The dedicated view uses Cosmos 0.3.0's state/HTML contract. Independent action
+> permissions require the newer, unreleased core action contract as well.
 
 ## What it does
 
-You look at flights on a Monday. By Friday you have lost the number, so you
-search again from scratch and have no idea whether 340,000 is a good price or a
-bad one. Buying a ticket well takes weeks of that, and none of it survives.
+Enter the origin, destination and dates, then add an airline or choose nonstop.
+Return is optional. Swap airports with one button. Your saved trip fills the
+form when you reopen the workspace; refreshing results does not erase a draft.
 
-This keeps the part that matters: **where you were trying to go, what day you
-meant to leave, and what the fare was each time it looked.** So the second
-search can tell you something the first one could not.
+- A moving **route illustration** introduces the trip. It is a schematic,
+  not a geographic map or a real aircraft position.
+- Four selectable flight cards show the airline, listed local departure and
+  arrival clocks, total travel time, stops and fare basis. Selecting a card or
+  price bar updates the detailed itinerary beside it.
+- **Fare bars** compare the current page, grouped by currency and fare basis,
+  from zero. Unknown prices have no bar. Unknown stops are never called nonstop.
+- **Observation history** shows the route minimum for the same trip and
+  comparable currency/fare basis. It is not a forecast or the price history of
+  one particular flight. A changed currency or fare basis starts a new history.
+- **Compare nearby dates** reads the date grid as a separate action. Choose a
+  returned date to search again while retaining the trip's return date. If
+  grid labels cannot establish comparable conditions, no cheaper-day claim is
+  made. In particular, airline/nonstop filters are not proven by these labels.
+- **I booked it / Trip cancelled / Still deciding** save your decision and let
+  you undo it. These buttons never buy a ticket.
 
-- **Four flights side by side on one screen** — price, how many times you change
-  planes, how long the whole trip takes, and one sentence on why a flight is
-  worth a look. Say *"show the next ones"* for the rest.
-- **Say what you want and it looks for that.** Name an airline, ask for nonstop
-  only, give a return date — the conditions go into the search *and* filter what
-  comes back, and the screen shows which ones are on. When nothing matches it
-  says **which condition is the problem** ("I found 5 flights, but none on
-  Korean Air"), because "nothing found" makes people doubt the route instead of
-  the filter they can actually drop.
-- **It says what the price covers.** Each card marks a fare as one way or
-  return when the results say so, and stays quiet when they do not. A round-trip
-  search never recommends a one-way fare: 189,000 one way is not a better deal
-  than 212,000 return, and putting them side by side implies it is.
-- **The one it pushes is not simply the cheapest.** On a flight the cheapest is
-  often the hardest — two stops and thirteen hours. It pushes the cheapest of
-  the ones with the fewest stops, and the card says so in words. The cheapest
-  overall is marked separately, so you can see the trade you would be making.
-- **A trend, not a number.** Every search leaves an observation, so the screen
-  can draw which way the fare is going. That is the thing you actually want to
-  know before you book: is it worth waiting?
-- **It tells you before you ask.** If a fare you are still thinking about drops,
-  it says so at that moment rather than waiting for you to open a screen. Sales
-  end; a price drop you hear about next week is not information.
-- **It stops when it should.** The day you say you booked, and the day the plane
-  leaves, it stops watching and takes its own notice down.
+The view uses the Cosmos palette and fonts, English originals and Korean,
+Japanese, German, Spanish and French translations. It responds to selection,
+loading and fare changes, pauses when hidden, and supports reduced motion and
+an explicit pause button. The layout adapts to narrow screens.
 
 ## How it works
 
-It implements the Cosmos `plugin/v1` contract as a single file
-(`flights_scout.py`) with its translations alongside (`flights_i18n.py`).
+The brain stores a `wish` for the trip: origin, destination, departure and
+return dates, airline/nonstop conditions, observed fare, currency, fare basis,
+observation time and your booked/cancelled decision. A related `place` makes
+the destination discoverable. Another date or different trip conditions form
+a different trip, so unrelated fares do not overwrite one another.
 
-1. **Reads your memory first** — has this route been looked at before, and what
-   did it cost then?
-2. **Asks the web** through Cosmos's own `web_search` tool. The search terms go
-   through translation, so a Korean or French user gets results in their own
-   market rather than an English one.
-3. **A model moves the results into rows** — airline, route, date, stops,
-   duration, price, currency, link. That is *all* the model does. It is told
-   never to invent a price or a date, and to leave unknown fields empty.
-4. **Every judgement is our own code, and it is plain to read**: cheapest first,
-   fewest stops as the tiebreak, unknown prices last, and the push is "cheapest
-   of the ones with the fewest stops". Nothing is blended into a score — a score
-   hides its reasons, and a ranking without reasons is indistinguishable from an
-   advert.
-5. **Writes the observation back** to the brain with the time it was taken, and
-   draws the comparison on its own screen.
+A repeated search reads that trip before comparing fares. Repeating the current
+route without new conditions continues its saved dates and conditions. Pass an
+explicit empty value to clear a condition. Choices for this trip are **not**
+stored as permanent preferences. Passenger names, passports, loyalty numbers,
+booking references and payment details are not stored.
 
-★The same route on a different day is a different trip.★ This is the one thing
-flights need that shopping does not. September 10th to Tokyo and December 24th
-to Tokyo are not the same thing, so the date is part of how the trip is
-remembered. Without that, one peak-season search overwrites your off-season
-memory and the next search reports a price rise that never happened.
+Detailed results belong to the current user's persistent workspace. State uses
+the Cosmos storage provider in local and hosted deployments. Old contexts use
+an account-specific file; an old file without an owner is not assigned to any
+account automatically. Existing brain memories remain available; search again
+to rebuild the screen.
+
+When enabled and permitted, the background hook checks one eligible trip at a
+time, no more often than roughly twelve hours per trip when Cosmos runs the
+hook. This is not continuous monitoring or an airline fare alert subscription.
+Booked, cancelled and departed trips are excluded. A worthwhile decrease can
+raise a notice; increases stay on the screen.
 
 ## What it needs
 
-| Permission | Why |
+The current implementation opens the Google Flights listing through Cosmos
+`read_page`, then asks the configured model to extract only information on the
+page. It does **not** use headline web-search snippets as a fare database. The
+listing is opened in English for extraction; the workspace is localized.
+
+| Action | Required permissions |
 |---|---|
-| `network` | To search the web for fares. It has no fare database of its own. |
-| `memory` | ★This is the whole point.★ Without it every search is the first search, and "that route dropped" cannot be said at all. It stores the route, the destination and the fare it saw, with the time it saw it. |
+| Search | `memory`, `network`, `browser` |
+| Compare nearby dates | `memory`, `network`, `browser`, `browser.act` |
+| Saved view, pagination, decisions, tracking removal | `memory` |
+| Open selected source | `memory` here; the delegated `browser_control` tool also enforces its permissions |
 
-Nothing else. It does not ask for the desktop, the screen, the clipboard or your
-files.
+The full manifest declares all four capabilities. On older cores that do not
+support action permissions, the full union still gates calls. Background hooks
+also currently use the full union: denying browser clicking stops automatic
+checks, although foreground search remains usable on the new contract. This
+common hook limitation must be resolved before final permission validation.
 
-## What it does NOT do
-
-- **It does not book anything.** It has no payment permission and no airline
-  account. The last button is always yours, on the airline's own site.
-- **It never stores who is travelling.** No passenger names, no passport or
-  frequent-flyer numbers, no booking references. The brain is searched and put
-  into prompts; nothing that identifies a traveller belongs there.
-- **It does not decide you booked.** Because it does not issue tickets, it
-  cannot know. It asks, and it only records what you actually say — and you can
-  take it back ("I have not booked it after all").
-- **It does not turn your choices into a permanent "taste".** Picking a morning
-  flight once is a judgement about that trip, not a preference of yours.
-- **It does not tell you a fare went up.** You cannot act on that, so it stays
-  on the screen where it belongs and never becomes an interruption.
-- **It takes no commission and has no partner airlines.** Nothing in the ranking
-  is paid for.
+The installed-agent **Currency** setting changes the requested listing currency;
+`auto` uses the listing's choice. You can also expand **Search settings** in
+the Flights view and save a currency, including **Listing default**. Both entry
+points use the same standard setting, with no extra preference store. Changes
+apply to the next search; existing cards and graphs keep their observed currency.
+An unsaved selection survives refreshes; stale saves are rejected. Close and
+reopen Search settings to load a change made elsewhere. The setting follows
+Cosmos's deployment scope (one owner locally, user-specific in multiuser mode).
+The **Tell you when something needs doing** toggle controls proactive checks.
+Disabling it or the agent also suppresses late results from an ongoing check;
+it does not cancel an already running provider request.
 
 ## Data and privacy
 
-**Stays on your machine.** The routes, the destinations and the fares it
-observed live in your Cosmos brain, on your own disk. So does the last
-comparison it drew.
+Data location depends on your Cosmos deployment. Trip conditions go to the
+flight listing, and page content goes to your configured model. The iframe
+makes no external requests; source URLs stay behind the action boundary.
 
-**Leaves your machine:** the search phrase only — the origin, the destination
-and the date you asked about — sent to the web search Cosmos is already
-configured to use, and the raw results sent to the model you configured, so it
-can turn them into rows.
+## What it does NOT do
 
-**Never leaves, and is never stored:** anything identifying a traveller.
-
-You can see everything it kept by asking *"what routes have I been watching?"*,
-and remove any of it with *"stop tracking that route"* or from the brain screen.
+It does not book, pay, predict future fares, infer passenger identity or turn a
+trip-specific airline choice into a lasting preference. It has no airline account.
 
 ## Limits
 
-- Fares come from **web search results, not from an airline API**. They can be
-  stale or partial, and a fare can be gone by the time you click. Treat the
-  screen as "worth a look", not as a quote.
-- Travel time and stop counts are only as good as what the search results say.
-  When the results do not say, the column reads *Unknown* rather than a guess.
-- **Return dates go into the search, not into arithmetic.** It never doubles a
-  one-way fare to guess a return price — it filters to fares the results
-  actually describe as returns, and leaves the rest marked "unknown". When the
-  results say nothing about what a price covers, neither does it.
-- Fares in **different currencies are never compared.** If the same route comes
-  back in USD when it was last seen in KRW, it says nothing rather than
-  subtracting two numbers that do not mean the same thing.
-- The background check looks at **one watched route at a time**, roughly twice a
-  day, so a conversation never fans out into a dozen web searches.
+Fares are observations, not quotes. Check taxes, baggage, availability and the
+arrival date at the source before booking. City-to-airport aliases, source
+links, extracted times, dates and fare coverage still require real-service
+verification. Explicitly conflicting destinations and departure dates are
+rejected, rather than substituted as the requested trip.
+
+Unknown fare basis is labeled as unconfirmed. Different currencies or known
+fare bases never produce a single cheapest recommendation or a price-drop
+claim. No currency conversion, guessed flight times or invented history is used.
+
+Search errors retain previous results with an explanation. A successful empty
+result clears the old list. Memory failures are visible. Stale screen actions
+cannot open or change a newly searched trip. A source-open refusal remains a
+refusal; it never means the flight was booked.
+
+`tests/` and `scripts/check_workspace_ui.mjs` cover synthetic evidence using
+real Cosmos state, memory, action dispatch, renderer and CSP. Start the isolated
+preview with `scripts/preview_workspace.py --core /path/to/cosmos-billy`
+(port 8805), then run the UI script with `FLIGHTS_PLAYWRIGHT_MODULE` pointing to
+Playwright. `scripts/record_motion.mjs` records the actual workspace interaction.
+The preview uses a temporary Cosmos home and never opens a real booking page.
+
+The local-archive `scripts/check_installation.py` exercises the actual installer,
+loader and control plane: install, settings from both entry points, off/on,
+notice toggle, removal, restart discovery and reinstallation. Package removal
+detaches the tool; personal settings and memories remain. This is not an
+installer-button UI test or a published-version update test. The unit suite
+currently passes 164 tests. The view loader works from an installed package,
+without the source directory on the import path.
+
+External accounts, web/API/hybrid selection, real listings and revocation are
+collected for the final integration phase. No new release, user installation,
+actual reservation or final real-use approval is claimed by these examples.
 
 ## Setup
 
-None. Install it and say *"find flights to Tokyo leaving on the 10th"*.
-
-If you want it to stop speaking up on its own, turn off **"Tell you when
-something needs doing"** on its card — the hook is declared, so turning it off
-really does stop it being called.
+Install the agent and open its Flights view or ask for a route in conversation.
+Choose a currency in the agent settings if needed. Browser availability and
+action permissions depend on the Cosmos deployment; account/service integration
+remains a separate final validation step. No hand-entered API key is required.
 
 ## Support
 
-Open an issue at
-<https://github.com/honeyground-org/cosmos-agents/issues>.
+Open an issue at <https://github.com/honeyground-org/cosmos-agents/issues>.

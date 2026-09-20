@@ -1,0 +1,77 @@
+// Actual Cosmos renderer and browser window route, with isolated preview services.
+import assert from 'node:assert/strict';
+import {mkdir,writeFile} from 'node:fs/promises';
+import {resolve,join} from 'node:path';
+const {chromium}=await import(process.env.YOUTUBE_PLAYWRIGHT_MODULE||'playwright');
+const base='http://127.0.0.1:8803',out=resolve(process.argv[2]||'/tmp/youtube-presentations');
+await mkdir(out,{recursive:true});
+const browser=await chromium.launch({headless:true});
+const context=await browser.newContext({viewport:{width:1440,height:1200}});
+// Fixture identity only: exercise the existing solo-window boot path, not login.
+await context.addInitScript(()=>{try{if(window===top)sessionStorage.setItem('cosmos_token','isolated-preview')}catch{}});
+const errors=[],external=[];
+context.on('page',p=>{p.on('pageerror',e=>errors.push(e.message));p.on('request',r=>{if(/^https?:/.test(r.url())&&!r.url().startsWith(base+'/'))external.push(r.url())})});
+try{
+ const page=await context.newPage();await page.goto(base,{waitUntil:'domcontentloaded'});
+ const ui=page.frameLocator('#av-body iframe');await ui.locator('#query').waitFor();
+ await ui.locator('#query').fill('references');await ui.locator('#search button[type=submit]').click();await ui.locator('.result').first().waitFor();
+ await ui.locator('#mode-channel').click();await ui.locator('body[data-mode=channel]').waitFor();
+ await page.waitForFunction(()=>getComputedStyle(document.querySelector('#agentview')).opacity==='1');
+ await page.locator('#av-body').evaluate(e=>e.scrollTop=0);await page.screenshot({path:join(out,'youtube-channel.png')});
+ const frame=page.frames().find(f=>f.url().includes('/api/agent/canvas'));
+ await frame.evaluate(()=>window.marker='preserved');
+ await ui.locator('#query').fill('My next research');
+ await ui.locator('#mode-research').click();await ui.locator('body[data-mode=research]').waitFor();
+ assert.equal(await ui.locator('.channel-panel').isVisible(),false);
+ assert.equal(await ui.locator('#query').inputValue(),'My next research');
+ assert.equal(await frame.evaluate(()=>window.marker),'preserved');
+ await page.waitForTimeout(5500);assert.equal(await ui.locator('#query').inputValue(),'My next research');
+ await ui.locator('.result').first().click();await ui.locator('#summarize').click();await ui.locator('#summary').waitFor({state:'visible'});
+ await page.locator('#av-body').evaluate(e=>e.scrollTop=0);await page.screenshot({path:join(out,'youtube-research.png')});
+ const opened=page.waitForEvent('popup');await page.locator('#av-pop').click();const popup=await opened;
+ await popup.waitForLoadState('domcontentloaded');
+ const solo=popup.frameLocator('#av-body iframe');await solo.locator('body[data-mode=research]').waitFor();
+ assert.ok(popup.url().endsWith('#agent=youtube'));assert.equal(new URL(popup.url()).search,'');
+ assert.equal(await popup.locator('body').getAttribute('data-solo'),'1');
+ assert.equal(await popup.locator('body > header').isVisible(),false);
+ assert.equal(await popup.locator('body > footer').isVisible(),false);
+ assert.equal(await popup.locator('#av-pick').isVisible(),false);
+ await solo.locator('#summary').waitFor({state:'visible'});
+ await popup.setViewportSize({width:1440,height:1000});await popup.locator('#av-body').evaluate(e=>e.scrollTop=0);
+ await popup.screenshot({path:join(out,'youtube-independent-browser.png')});
+ // A change in the independent window reaches the original view via real polling.
+ await solo.locator('#mode-channel').click();await solo.locator('body[data-mode=channel]').waitFor();
+ await ui.locator('body[data-mode=channel]').waitFor();
+ assert.equal(await ui.locator('#query').inputValue(),'My next research');
+ await solo.locator('#mode-research').click();await solo.locator('body[data-mode=research]').waitFor();
+ await popup.setViewportSize({width:390,height:844});
+ const sf=popup.frames().find(f=>f.url().includes('/api/agent/canvas'));
+ assert.equal(await sf.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
+ await solo.locator('#query').scrollIntoViewIfNeeded();await popup.screenshot({path:join(out,'youtube-independent-mobile.png')});
+ await solo.locator('.result').first().click();await page.waitForTimeout(250);
+ assert.ok((await solo.locator('#detail').boundingBox()).y<250);
+ await solo.locator('#back-results').click();
+ await popup.emulateMedia({reducedMotion:'reduce'});
+ assert.equal(await solo.locator('#detail-image').evaluate(e=>getComputedStyle(e).animationName),'none');
+ await popup.reload();await solo.locator('body[data-mode=research]').waitFor();await solo.locator('#summary').waitFor({state:'visible'});
+ await popup.close();assert.equal(page.isClosed(),false);
+ const browserOpen=page.waitForEvent('popup');await page.locator('#av-browser').click();const externalView=await browserOpen;
+ await externalView.waitForLoadState('domcontentloaded');
+ assert.ok(externalView.url().endsWith('#agent=youtube&surface=browser'));
+ await externalView.frameLocator('#av-body iframe').locator('body[data-mode=research]').waitFor();
+ await externalView.close();
+ // Use the real sign-in page and a fixture response: no real account is contacted.
+ const loginContext=await browser.newContext();const loginPage=await loginContext.newPage();
+ loginPage.on('pageerror',e=>errors.push(e.message));
+ await loginPage.route('**/api/session',route=>route.fulfill({json:{ok:true,signed_in:true,token:'isolated-preview-login'}}));
+ await loginPage.goto(base+'/gate-preview#agent=youtube');
+ await loginPage.locator('#email').fill('preview@example.com');await loginPage.locator('#pw').fill('fixture-password');
+ await loginPage.locator('#go').click();await loginPage.waitForURL(base+'/#agent=youtube');
+ await loginPage.frameLocator('#av-body iframe').locator('body[data-mode=research]').waitFor();
+ assert.equal(await loginPage.locator('body').getAttribute('data-solo'),'1');
+ await loginContext.close();
+ assert.deepEqual(errors,[]);assert.deepEqual(external,[]);
+ const report={synthetic:true,real_accounts:false,real_search:false,real_uploads:false,checks:['agent-owned channel and research layouts','layout persists across reload','draft and iframe survive layout changes and polling','actual app-window and browser buttons use distinct named destinations','independent browser hides Cosmos header/footer and agent picker','same summary in integrated and independent views','cross-window layout changes preserve the original input draft','fixture sign-in returns to the selected independent agent','390px no overflow and detail/back actions','reduced motion','no page errors or external HTTP requests'],limits:['Preview identity bypasses login; actual cross-browser authentication not verified','Native OS browser launch tested with the real Electron handler and a stub OS adapter, not a GUI launch'],screenshots:['youtube-channel.png','youtube-research.png','youtube-independent-browser.png','youtube-independent-mobile.png']};
+ await writeFile(join(out,'youtube-presentations-validation.json'),JSON.stringify(report,null,2)+'\n');
+ console.log(JSON.stringify({passed:true,out,...report}));
+}catch(error){console.error(JSON.stringify({errors,external}));throw error}finally{await browser.close()}
