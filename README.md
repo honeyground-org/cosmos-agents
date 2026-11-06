@@ -3,10 +3,10 @@
 First-party agents for [Cosmos](https://github.com/honeyground-org/cosmos-billy),
 each in its own folder.
 
-> **Built into Cosmos since 0.4.1.** Every Cosmos install now ships these
-> agents (shopping, flights, YouTube) — nobody has to find them in the market.
-> This repository stays the source: a newer version published here still
-> reaches people through the market and replaces the built-in copy.
+> **Built into Cosmos since 0.4.1.** Every Cosmos install ships these agents (shopping, flights, YouTube), and they are
+> not in the market: the market is for agents built by others. Cosmos ships its own copy and updates it
+> with the app; it never installs this repository from the market. This repository is the development
+> source.
 
 | Folder | Agent | What it is for |
 |---|---|---|
