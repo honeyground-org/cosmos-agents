@@ -3,6 +3,11 @@
 First-party agents for [Cosmos](https://github.com/honeyground-org/cosmos-billy),
 each in its own folder.
 
+> **Built into Cosmos since 0.4.1.** Every Cosmos install now ships these
+> agents (shopping, flights, YouTube) — nobody has to find them in the market.
+> This repository stays the source: a newer version published here still
+> reaches people through the market and replaces the built-in copy.
+
 | Folder | Agent | What it is for |
 |---|---|---|
 | [`shopping/`](shopping/) | `honeyground-org/shopping` | Remembers what you were thinking of buying and tells you when the price moves |
